@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -23,6 +24,7 @@ import {
   Plus,
   Users,
   ArrowUpDown,
+  PackagePlus,
   Check,
   Pencil,
 } from "lucide-react";
@@ -189,6 +191,7 @@ function EditModal({
   onClose: () => void;
   onSaved: (updated: Booking) => void;
 }) {
+  const router = useRouter();   // <-- Add this
   const [form, setForm] = useState<EditForm>(() => bookingToEditForm(booking));
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<keyof EditForm, string>>>({});
@@ -306,9 +309,31 @@ function EditModal({
       onClick={handleOverlayClick}
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 px-4 py-8"
     >
+      
       <div className="w-full max-w-3xl rounded-xl border border-neutral-200 bg-white shadow-2xl">
+        {/* Header actions */}
+<div className="flex items-center gap-2">
+  <Button variant="outline" onClick={() => router.push("/admin/cargo/customers")}
+    className="border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50">
+    <Users className="mr-1.5 h-4 w-4" />
+    <span className="hidden sm:inline">Customers</span>
+  </Button>
+  <Button variant="outline" onClick={() => router.push("/admin/cargo/docket")}
+    className="border-blue-200 bg-white text-blue-700 hover:bg-blue-50">
+    <PackagePlus className="mr-1.5 h-4 w-4" />
+    <span className="hidden sm:inline">New Docket</span>
+    <span className="sm:hidden">Docket</span>
+  </Button>
+  <Button onClick={() => router.push("/admin/cargo/bookingPage")}
+    className="bg-emerald-600 text-white hover:bg-emerald-700">
+    <Plus className="mr-1.5 h-4 w-4" />
+    <span className="hidden sm:inline">Create new order</span>
+    <span className="sm:hidden">New</span>
+  </Button>
+</div>
         {/* Modal header */}
         <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-4">
+          
           <div>
             <h2 className="text-sm font-semibold text-neutral-900">Edit booking</h2>
             <p className="font-mono text-xs text-emerald-700">{booking.tracking_id}</p>

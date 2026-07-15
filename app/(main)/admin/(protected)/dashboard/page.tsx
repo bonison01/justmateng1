@@ -7,6 +7,7 @@ import {
   Image as ImageIcon,
   CalendarDays,
   Users,
+  ShieldCheck,
 } from "lucide-react";
 
 // One entry per real folder under app/(main)/admin/. Add a new entry
@@ -49,6 +50,12 @@ const SECTIONS = [
     label: "Team",
     description: "Approve and manage admin accounts",
     icon: Users,
+  },
+  {
+    href: "/admin/staff",
+    label: "Staff & Roles",
+    description: "Manage staff accounts and role permissions",
+    icon: ShieldCheck,
   },
 ];
 

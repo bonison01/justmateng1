@@ -1,8 +1,68 @@
 //app/(main)/admin/events_list/page.tsx
 "use client";
 
+/**
+ * ── EVENT COVER PHOTOS: SETUP ───────────────────────────────────────
+ * This page adds a "Media" tab to the event editor for uploading a
+ * cover photo per event. It's a brand-new module — do this once:
+ *
+ * 1) DB column (Supabase SQL editor):
+ *      alter table events add column if not exists image_url text;
+ *
+ * 2) Storage bucket (Supabase SQL editor or Dashboard → Storage):
+ *      insert into storage.buckets (id, name, public)
+ *      values ('event-photos', 'event-photos', true)
+ *      on conflict (id) do nothing;
+ *
+ * 3) Storage policies (SQL editor) — public read, authenticated write.
+ *    Adjust the write policy to match your auth model (e.g. restrict
+ *    to admins) before shipping to production:
+ *      create policy "Public read event photos"
+ *        on storage.objects for select
+ *        using (bucket_id = 'event-photos');
+ *      create policy "Authenticated upload event photos"
+ *        on storage.objects for insert
+ *        with check (bucket_id = 'event-photos' and auth.role() = 'authenticated');
+ *      create policy "Authenticated update event photos"
+ *        on storage.objects for update
+ *        using (bucket_id = 'event-photos' and auth.role() = 'authenticated');
+ *      create policy "Authenticated delete event photos"
+ *        on storage.objects for delete
+ *        using (bucket_id = 'event-photos' and auth.role() = 'authenticated');
+ *
+ * Once the bucket exists, the Media tab in the edit drawer below just
+ * works — pick a file, it uploads, gets a public URL, and that URL is
+ * saved to events.image_url. The public discovery page automatically
+ * uses it for cards, the event modal, and the homepage hero carousel.
+ *
+ * ── "Upload succeeds but nothing shows up in the DB" ────────────────
+ * If the file uploads fine (Media tab shows the preview, "Save
+ * Changes" shows "✓ Saved!") but the row in `events` never actually
+ * changes, the almost-certain cause is Row Level Security silently
+ * blocking the UPDATE. Supabase does NOT return an error when RLS
+ * blocks a write — it just updates 0 rows and reports success. Check:
+ *
+ *   select relrowsecurity from pg_class where relname = 'events';
+ *   select * from pg_policies where tablename = 'events';
+ *
+ * If RLS is enabled and there's no UPDATE policy permitting the role
+ * this page authenticates as (commonly `anon`, since this page uses
+ * the public anon key with no Supabase Auth session), add one. Only
+ * do the permissive anon version below if `/admin` is already gated
+ * some other way — otherwise anyone with your anon key can edit events:
+ *
+ *   create policy "Allow event updates"
+ *     on events for update
+ *     using (true) with check (true);
+ *
+ * (swap `using (true)` for a real auth check once you have one, e.g.
+ * `using (auth.role() = 'authenticated')`.) The same applies to INSERT
+ * if creating new events ever silently "succeeds" without appearing.
+ * ─────────────────────────────────────────────────────────────────────
+ */
+
 import { motion, AnimatePresence } from "framer-motion";
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
 
@@ -10,6 +70,21 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+
+const EVENT_PHOTOS_BUCKET = "event-photos";
+
+async function uploadEventImage(file: File, eventId: string): Promise<string> {
+  const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+  const path = `${eventId}/cover-${Date.now()}.${ext}`;
+  const { error } = await supabase.storage.from(EVENT_PHOTOS_BUCKET).upload(path, file, {
+    upsert: true,
+    cacheControl: "3600",
+    contentType: file.type || undefined,
+  });
+  if (error) throw error;
+  const { data } = supabase.storage.from(EVENT_PHOTOS_BUCKET).getPublicUrl(path);
+  return data.publicUrl;
+}
 
 type CategoryId = "all" | "education" | "concerts" | "business" | "medical" | "sports" | "cultural" | "workshops" | "exhibitions";
 type EventStatus = "draft" | "upcoming" | "open" | "ongoing" | "past" | "postponed" | "cancelled";
@@ -20,8 +95,10 @@ interface DBEvent {
   organizer_name: string; date_start: string; date_end?: string; time_start?: string;
   venue: string; city: string; fee_label: string; capacity?: number; attendees_count?: number;
   sponsors: string[]; register_href?: string;
-  // ── NEW: public event page path ──
+  // ── public event page path ──
   page_href?: string;
+  // ── cover photo (Supabase Storage public URL) ──
+  image_url?: string;
   // ── Contact fields ──
   contact_phone?: string; contact_email?: string; contact_name?: string;
   website_url?: string; maps_url?: string; social_instagram?: string; social_facebook?: string;
@@ -118,12 +195,34 @@ function StatusBadge({ status }: { status: EventStatus }) {
   );
 }
 
+// ── EVENT THUMBNAIL (photo if present, category glyph fallback) ──
+function EventThumb({ event, size = 44, radius = 11 }: { event: DBEvent; size?: number; radius?: number }) {
+  const cat = CATEGORIES.find(c => c.id === event.category);
+  if (event.image_url) {
+    return (
+      <img src={event.image_url} alt={event.title}
+        style={{ width: size, height: size, borderRadius: radius, objectFit: "cover", flexShrink: 0, border: "1px solid #e5e7eb" }} />
+    );
+  }
+  return (
+    <div style={{ width: size, height: size, borderRadius: radius, background: event.accent_color + "14", border: `1.5px solid ${event.accent_color}28`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: Math.round(size * 0.45), flexShrink: 0 }}>
+      {cat?.icon}
+    </div>
+  );
+}
+
 // ── EDIT DRAWER ───────────────────────────────────────────────────
 function EditDrawer({ event, onClose, onSaved }: { event: DBEvent; onClose: () => void; onSaved: (updated: DBEvent) => void }) {
-  const [tab, setTab] = useState<"basic" | "details" | "meta" | "contact">("basic");
+  const [tab, setTab] = useState<"basic" | "media" | "details" | "meta" | "contact">("basic");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+
+  // Media / cover photo
+  const [imageUrl, setImageUrl] = useState(event.image_url || "");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Contact fields
   const [contactPhone, setContactPhone] = useState(event.contact_phone || "");
@@ -145,7 +244,6 @@ function EditDrawer({ event, onClose, onSaved }: { event: DBEvent; onClose: () =
   const [tagsInput, setTagsInput] = useState((event.tags || []).join(", "));
   const [sponsorsInput, setSponsorsInput] = useState((event.sponsors || []).join(", "));
   const [registerHref, setRegisterHref] = useState(event.register_href || "");
-  // ── NEW: page path field ──
   const [pageHref, setPageHref] = useState(event.page_href || "");
   const [featured, setFeatured] = useState(event.featured);
   const [dateStart, setDateStart] = useState(event.date_start);
@@ -162,6 +260,21 @@ function EditDrawer({ event, onClose, onSaved }: { event: DBEvent; onClose: () =
     return () => document.removeEventListener("keydown", handler);
   }, [onClose]);
 
+  const handleFileChosen = async (file: File | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { setUploadError("Please choose an image file."); return; }
+    if (file.size > 8 * 1024 * 1024) { setUploadError("Image must be under 8MB."); return; }
+    setUploading(true); setUploadError(null);
+    try {
+      const url = await uploadEventImage(file, event.id);
+      setImageUrl(url);
+    } catch (e: any) {
+      setUploadError(e.message || "Upload failed. Has the 'event-photos' storage bucket been created?");
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const handleSave = async () => {
     if (!title.trim()) { setSaveError("Title is required."); return; }
     setSaving(true); setSaveError(null);
@@ -177,8 +290,8 @@ function EditDrawer({ event, onClose, onSaved }: { event: DBEvent; onClose: () =
         tags: tagsInput.split(",").map(t => t.trim()).filter(Boolean),
         sponsors: sponsorsInput.split(",").map(s => s.trim()).filter(Boolean),
         register_href: registerHref.trim() || null,
-        // ── NEW ──
         page_href: pageHref.trim() || null,
+        image_url: imageUrl.trim() || null,
         featured,
         date_start: dateStart,
         date_end: dateEnd || null,
@@ -196,8 +309,17 @@ function EditDrawer({ event, onClose, onSaved }: { event: DBEvent; onClose: () =
         social_facebook: socialFacebook.trim() || null,
         updated_at: new Date().toISOString(),
       };
-      const { error } = await supabase.from("events").update(updates).eq("id", event.id);
+      // .select() forces Supabase to return the row(s) actually changed. This
+      // matters because a blocked Row Level Security policy does NOT surface
+      // as an error on .update() — it silently updates 0 rows and returns
+      // success. Checking data.length is the only way to catch that here.
+      const { data, error } = await supabase.from("events").update(updates).eq("id", event.id).select();
       if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error(
+          "The update didn't change any rows. This almost always means Row Level Security is blocking the write for the current key/role — see the RLS setup notes at the top of this file."
+        );
+      }
       setSaved(true);
       onSaved({ ...event, ...updates, tags: updates.tags, sponsors: updates.sponsors } as DBEvent);
       setTimeout(() => { setSaved(false); onClose(); }, 1200);
@@ -223,9 +345,12 @@ function EditDrawer({ event, onClose, onSaved }: { event: DBEvent; onClose: () =
         {/* Header */}
         <div style={{ padding: "18px 22px 0", borderBottom: "1px solid #f3f4f6", flexShrink: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-            <div>
-              <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: "#111827" }}>Edit Event</h2>
-              <p style={{ margin: "2px 0 0", fontSize: 11, color: "#9ca3af" }}>{event.title}</p>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <EventThumb event={{ ...event, image_url: imageUrl }} size={38} radius={9} />
+              <div>
+                <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: "#111827" }}>Edit Event</h2>
+                <p style={{ margin: "2px 0 0", fontSize: 11, color: "#9ca3af" }}>{event.title}</p>
+              </div>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               {saved && <span style={{ fontSize: 12, color: "#14710f", fontWeight: 700 }}>✓ Saved!</span>}
@@ -237,15 +362,16 @@ function EditDrawer({ event, onClose, onSaved }: { event: DBEvent; onClose: () =
             </div>
           </div>
           {/* Tabs */}
-          <div style={{ display: "flex", gap: 2, marginBottom: -1 }}>
+          <div style={{ display: "flex", gap: 2, marginBottom: -1, overflowX: "auto" }}>
             {([
               { id: "basic", label: "Basic Info" },
+              { id: "media", label: `Media${imageUrl ? " ✓" : ""}` },
               { id: "details", label: "Date & Venue" },
               { id: "meta", label: "Settings" },
               { id: "contact", label: "Contact" },
             ] as const).map(t => (
               <button key={t.id} onClick={() => setTab(t.id)}
-                style={{ padding: "8px 16px", background: "none", border: "none", borderBottom: tab === t.id ? "2px solid #6366f1" : "2px solid transparent", color: tab === t.id ? "#4338ca" : "#6b7280", fontWeight: tab === t.id ? 700 : 500, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+                style={{ padding: "8px 16px", background: "none", border: "none", borderBottom: tab === t.id ? "2px solid #6366f1" : "2px solid transparent", color: tab === t.id ? "#4338ca" : "#6b7280", fontWeight: tab === t.id ? 700 : 500, fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
                 {t.label}
               </button>
             ))}
@@ -268,7 +394,6 @@ function EditDrawer({ event, onClose, onSaved }: { event: DBEvent; onClose: () =
                 <ETextarea label="Description" value={description} onChange={setDescription} rows={5} placeholder="Full event description…" />
                 <EInput label="Organiser Name *" value={organizerName} onChange={setOrganizerName} placeholder="Organisation name" />
 
-                {/* ── NEW: Page Path — sits prominently alongside the register link ── */}
                 <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10, padding: "14px 14px 4px", marginBottom: 14 }}>
                   <p style={{ margin: "0 0 10px", fontSize: 11, fontWeight: 700, color: "#14710f" }}>
                     🔗 Event Page Links
@@ -285,7 +410,6 @@ function EditDrawer({ event, onClose, onSaved }: { event: DBEvent; onClose: () =
                     onChange={setRegisterHref}
                     placeholder="/register or https://…"
                   />
-                  {/* Live preview of the "Learn More" link */}
                   {(pageHref || registerHref) && (
                     <div style={{ marginBottom: 10, padding: "8px 10px", background: "#fff", borderRadius: 7, border: "1px solid #d1fae5", fontSize: 11, color: "#065f46" }}>
                       <span style={{ fontWeight: 700 }}>Preview → </span>
@@ -301,6 +425,73 @@ function EditDrawer({ event, onClose, onSaved }: { event: DBEvent; onClose: () =
                   <EInput label="Tags (comma-separated)" value={tagsInput} onChange={setTagsInput} placeholder="NEET, Quiz, Outdoor" />
                   <EInput label="Sponsors (comma-separated)" value={sponsorsInput} onChange={setSponsorsInput} placeholder="Sponsor A, Sponsor B" />
                 </div>
+              </motion.div>
+            )}
+
+            {/* ── MEDIA (cover photo) ── */}
+            {tab === "media" && (
+              <motion.div key="media" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+                <p style={{ margin: "0 0 14px", fontSize: 12, color: "#6b7280", lineHeight: 1.6 }}>
+                  This photo is used on the event card, the event detail view, and — for upcoming or open events —
+                  it can appear automatically in the homepage hero carousel.
+                </p>
+
+                {/* Preview */}
+                <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 8", borderRadius: 12, overflow: "hidden", background: "#f3f4f6", border: "1px solid #e5e7eb", marginBottom: 14 }}>
+                  {imageUrl ? (
+                    <img src={imageUrl} alt="Cover preview" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ) : (
+                    <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, color: "#9ca3af" }}>
+                      <span style={{ fontSize: 28 }}>🖼️</span>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>No cover photo yet</span>
+                    </div>
+                  )}
+                  {uploading && (
+                    <div style={{ position: "absolute", inset: 0, background: "rgba(255,255,255,0.85)", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                      <span style={{ width: 16, height: 16, border: "2px solid #d1d5db", borderTopColor: "#111827", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#111827" }}>Uploading…</span>
+                    </div>
+                  )}
+                </div>
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={e => handleFileChosen(e.target.files?.[0])}
+                  style={{ display: "none" }}
+                />
+
+                <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploading}
+                    style={{ flex: 1, padding: "10px", background: "#111827", color: "#fff", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 700, cursor: uploading ? "default" : "pointer", opacity: uploading ? 0.6 : 1 }}
+                  >
+                    {imageUrl ? "Replace Photo" : "Upload Photo"}
+                  </button>
+                  {imageUrl && (
+                    <button
+                      onClick={() => { setImageUrl(""); setUploadError(null); }}
+                      disabled={uploading}
+                      style={{ padding: "10px 16px", background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 9, fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+
+                {uploadError && (
+                  <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "10px 14px", marginBottom: 14, color: "#991b1b", fontSize: 12 }}>
+                    {uploadError}
+                  </div>
+                )}
+
+                <div style={{ height: 1, background: "#f3f4f6", margin: "18px 0" }} />
+
+                <p style={{ margin: "0 0 8px", fontSize: 11, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.06em" }}>Or paste an image URL</p>
+                <EInput label="Image URL" value={imageUrl} onChange={setImageUrl} placeholder="https://…" />
+                <p style={{ margin: "-6px 0 0", fontSize: 11, color: "#9ca3af" }}>Uploads go to the <code>event-photos</code> storage bucket — see the setup notes at the top of this file if uploads fail.</p>
               </motion.div>
             )}
 
@@ -360,9 +551,7 @@ function EditDrawer({ event, onClose, onSaved }: { event: DBEvent; onClose: () =
                 <div style={{ background: "#f9fafb", borderRadius: 10, padding: "14px 16px", border: "1px solid #e5e7eb" }}>
                   <p style={{ margin: "0 0 8px", fontSize: 11, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.06em" }}>Preview</p>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 9, background: accentColor + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>
-                      {CATEGORY_OPTIONS.find(c => c.id === category)?.icon || "◈"}
-                    </div>
+                    <EventThumb event={{ ...event, image_url: imageUrl, accent_color: accentColor, category: category as CategoryId }} size={36} radius={9} />
                     <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span style={{ fontSize: 9, fontWeight: 800, color: accentColor, letterSpacing: "0.08em", textTransform: "uppercase" }}>
@@ -441,17 +630,13 @@ function EventDrawer({ event, onClose, onEdit }: { event: DBEvent; onClose: () =
   const hasContact = event.contact_name || event.contact_phone || event.contact_email ||
     event.website_url || event.maps_url || event.social_instagram || event.social_facebook;
 
-  // Resolve the "Learn More" destination: page_href takes priority, then register_href
   const learnMoreHref = event.page_href || event.register_href || null;
   const isExternal = learnMoreHref?.startsWith("http");
 
   const handleLearnMore = () => {
     if (!learnMoreHref) return;
-    if (isExternal) {
-      window.open(learnMoreHref, "_blank", "noopener,noreferrer");
-    } else {
-      router.push(learnMoreHref);
-    }
+    if (isExternal) window.open(learnMoreHref, "_blank", "noopener,noreferrer");
+    else router.push(learnMoreHref);
   };
 
   return (
@@ -464,6 +649,13 @@ function EventDrawer({ event, onClose, onEdit }: { event: DBEvent; onClose: () =
         initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }} transition={{ type: "spring", damping: 28, stiffness: 280 }}
         style={{ width: "min(520px, 100vw)", height: "100%", background: "#fff", overflowY: "auto", display: "flex", flexDirection: "column", boxShadow: "-8px 0 40px rgba(0,0,0,0.18)" }}
       >
+        {/* Cover photo */}
+        {event.image_url && (
+          <div style={{ position: "relative", height: 170, flexShrink: 0, backgroundImage: `url(${event.image_url})`, backgroundSize: "cover", backgroundPosition: "center" }}>
+            <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(0,0,0,0.05) 40%, rgba(0,0,0,0.5) 100%)" }} />
+          </div>
+        )}
+
         {/* Header */}
         <div style={{ padding: "20px 22px 0", borderBottom: "1px solid #f3f4f6", position: "sticky", top: 0, background: "#fff", zIndex: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
@@ -535,7 +727,7 @@ function EventDrawer({ event, onClose, onEdit }: { event: DBEvent; onClose: () =
               </div>
             )}
 
-            {/* ── Event Page Link indicator ── */}
+            {/* Event Page Link indicator */}
             {learnMoreHref && (
               <div style={{ marginBottom: 20, display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10 }}>
                 <span style={{ fontSize: 14 }}>🔗</span>
@@ -548,7 +740,16 @@ function EventDrawer({ event, onClose, onEdit }: { event: DBEvent; onClose: () =
               </div>
             )}
 
-            {/* ── Contact & Links ── */}
+            {/* No photo yet — nudge to Media tab */}
+            {!event.image_url && (
+              <div style={{ marginBottom: 20, display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#fffbeb", border: "1px dashed #fde68a", borderRadius: 10 }}>
+                <span style={{ fontSize: 14 }}>🖼️</span>
+                <span style={{ fontSize: 12, color: "#92400e", fontWeight: 600, flex: 1 }}>No cover photo yet — add one so this event can appear in the homepage hero.</span>
+                <button onClick={onEdit} style={{ fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fff", border: "1px solid #fde68a", borderRadius: 6, padding: "3px 9px", cursor: "pointer", flexShrink: 0 }}>Add photo</button>
+              </div>
+            )}
+
+            {/* Contact & Links */}
             {hasContact && (
               <div style={{ background: "#f9fafb", borderRadius: 12, padding: "14px 16px", border: "1px solid #f3f4f6" }}>
                 <p style={{ margin: "0 0 12px", fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.08em" }}>Contact & Links</p>
@@ -663,66 +864,27 @@ function EventDrawer({ event, onClose, onEdit }: { event: DBEvent; onClose: () =
           )}
         </div>
 
-        {/* ── Footer: Learn More + Edit ── */}
+        {/* Footer: Learn More + Edit */}
         <div style={{ padding: "14px 22px", borderTop: "1px solid #f3f4f6", background: "#fff", display: "flex", gap: 10 }}>
           {learnMoreHref ? (
             <button
               onClick={handleLearnMore}
-              style={{
-                flex: 1,
-                padding: "11px",
-                background: event.accent_color,
-                color: "#fff",
-                borderRadius: 10,
-                fontWeight: 700,
-                fontSize: 14,
-                border: "none",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 6,
-              }}
+              style={{ flex: 1, padding: "11px", background: event.accent_color, color: "#fff", borderRadius: 10, fontWeight: 700, fontSize: 14, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
             >
               {isExternal ? "🌐" : "→"} Learn More
             </button>
           ) : (
-            // Greyed-out placeholder when no page_href / register_href is set
             <button
               onClick={onEdit}
               title="Set 'Public Event Page Path' in Basic Info to enable"
-              style={{
-                flex: 1,
-                padding: "11px",
-                background: "#f3f4f6",
-                color: "#9ca3af",
-                borderRadius: 10,
-                fontWeight: 600,
-                fontSize: 13,
-                border: "1px dashed #d1d5db",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 6,
-              }}
+              style={{ flex: 1, padding: "11px", background: "#f3f4f6", color: "#9ca3af", borderRadius: 10, fontWeight: 600, fontSize: 13, border: "1px dashed #d1d5db", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
             >
               + Set Event Page Path
             </button>
           )}
           <button
             onClick={onEdit}
-            style={{
-              padding: "11px 18px",
-              background: "#f3f4f6",
-              color: "#374151",
-              border: "none",
-              borderRadius: 10,
-              fontWeight: 700,
-              fontSize: 13,
-              cursor: "pointer",
-              flexShrink: 0,
-            }}
+            style={{ padding: "11px 18px", background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", flexShrink: 0 }}
           >
             ✏️ Edit
           </button>
@@ -742,14 +904,14 @@ function EventRow({ event, onSelect, onEdit, onDelete }: { event: DBEvent; onSel
       whileHover={{ backgroundColor: "#f8fafc" }}
       style={{ display: "flex", alignItems: "center", gap: 16, padding: "14px 20px", borderBottom: "1px solid #f3f4f6", cursor: "pointer", transition: "background 0.12s" }}
     >
-      <div style={{ width: 44, height: 44, borderRadius: 11, background: event.accent_color + "14", border: `1.5px solid ${event.accent_color}28`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>
-        {cat?.icon}
-      </div>
+      <EventThumb event={event} size={44} radius={11} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
           <span style={{ fontSize: 14, fontWeight: 800, color: "#111827", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 260 }}>{event.title}</span>
           {event.featured && <span style={{ fontSize: 9, fontWeight: 700, color: "#d97706", background: "#fffbeb", border: "1px solid #fde68a", padding: "1px 6px", borderRadius: 999, flexShrink: 0 }}>★</span>}
-          {/* ── Show page path as a small pill on the row ── */}
+          {event.image_url && (
+            <span style={{ fontSize: 9, fontWeight: 600, color: "#4338ca", background: "#eef2ff", border: "1px solid #c7d2fe", padding: "1px 7px", borderRadius: 999, flexShrink: 0 }}>🖼️ Photo</span>
+          )}
           {event.page_href && (
             <span style={{ fontSize: 9, fontWeight: 600, color: "#14710f", background: "#f0fdf4", border: "1px solid #bbf7d0", padding: "1px 7px", borderRadius: 999, flexShrink: 0, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               🔗 {event.page_href}
@@ -798,24 +960,28 @@ function EventCard({ event, onSelect, onEdit, onDelete }: { event: DBEvent; onSe
     <motion.div
       layout initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.97 }}
       whileHover={{ y: -3, boxShadow: "0 12px 36px rgba(0,0,0,0.11)" }}
-      style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden", display: "flex", flexDirection: "column", borderTop: `3px solid ${event.accent_color}`, position: "relative" }}
+      style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden", display: "flex", flexDirection: "column", position: "relative", ...(event.image_url ? {} : { borderTop: `3px solid ${event.accent_color}` }) }}
     >
       <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 5, zIndex: 2 }}>
         <button onClick={e => { e.stopPropagation(); onEdit(); }}
-          style={{ padding: "4px 9px", background: "#f0f9ff", color: "#1a56a8", border: "1px solid #bfdbfe", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+          style={{ padding: "4px 9px", background: "rgba(255,255,255,0.95)", color: "#1a56a8", border: "1px solid #bfdbfe", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
           ✏️
         </button>
         <button onClick={e => { e.stopPropagation(); onDelete(event.id); }}
-          style={{ padding: "4px 9px", background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}
-          onMouseEnter={e => (e.currentTarget.style.background = "#fee2e2")}
-          onMouseLeave={e => (e.currentTarget.style.background = "#fef2f2")}
+          style={{ padding: "4px 9px", background: "rgba(255,255,255,0.95)", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}
         >
           🗑
         </button>
       </div>
 
+      {event.image_url && (
+        <div onClick={onSelect} style={{ cursor: "pointer", height: 118, backgroundImage: `url(${event.image_url})`, backgroundSize: "cover", backgroundPosition: "center", position: "relative" }}>
+          <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(0,0,0,0) 60%, rgba(0,0,0,0.4) 100%)" }} />
+        </div>
+      )}
+
       <div onClick={onSelect} style={{ cursor: "pointer", padding: "16px 18px 12px", flex: 1 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, paddingRight: 72 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, paddingRight: event.image_url ? 0 : 72 }}>
           <span style={{ fontSize: 20 }}>{cat?.icon}</span>
           <span style={{ fontSize: 9, fontWeight: 800, color: event.accent_color, letterSpacing: "0.08em", textTransform: "uppercase" }}>{cat?.label}</span>
           {event.featured && <span style={{ fontSize: 9, fontWeight: 700, color: "#d97706" }}>★</span>}
@@ -834,13 +1000,6 @@ function EventCard({ event, onSelect, onEdit, onDelete }: { event: DBEvent; onSe
         <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 4 }}>
           {(event.tags || []).slice(0, 3).map(t => <span key={t} style={{ padding: "2px 7px", borderRadius: 999, fontSize: 10, fontWeight: 600, background: event.accent_color + "12", color: event.accent_color }}>{t}</span>)}
         </div>
-        {/* ── Page path chip on card ── */}
-        {event.page_href && (
-          <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 5 }}>
-            <span style={{ fontSize: 10 }}>🔗</span>
-            <span style={{ fontSize: 10, color: "#14710f", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{event.page_href}</span>
-          </div>
-        )}
       </div>
       <div onClick={onSelect} style={{ cursor: "pointer", padding: "10px 18px", borderTop: "1px solid #f3f4f6", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontSize: 11, color: "#9ca3af" }}>{timeAgo(event.date_start)}</span>
@@ -863,8 +1022,11 @@ function Skeleton({ view }: { view: "list" | "grid" }) {
     </div>
   );
   return (
-    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden", padding: "16px 18px" }}>
-      {[70, 130, 40, 40, 40].map((w, i) => <div key={i} style={{ height: i === 0 ? 16 : 12, width: `${w}%`, background: "#f3f4f6", borderRadius: 4, marginBottom: 10, animation: "shimmer 1.4s infinite" }} />)}
+    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden" }}>
+      <div style={{ height: 118, background: "#f3f4f6", animation: "shimmer 1.4s infinite" }} />
+      <div style={{ padding: "16px 18px" }}>
+        {[70, 130, 40, 40, 40].map((w, i) => <div key={i} style={{ height: i === 0 ? 16 : 12, width: `${w}%`, background: "#f3f4f6", borderRadius: 4, marginBottom: 10, animation: "shimmer 1.4s infinite" }} />)}
+      </div>
     </div>
   );
 }
@@ -971,6 +1133,7 @@ export default function EventsListPage() {
         * { box-sizing: border-box; }
         @keyframes shimmer { 0%,100%{opacity:1} 50%{opacity:0.5} }
         @keyframes livepulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(1.4)} }
+        @keyframes spin { to { transform: rotate(360deg); } }
         input:focus,textarea:focus,select:focus { outline: none; border-color: #6366f1 !important; box-shadow: 0 0 0 3px #eef2ff !important; }
         ::-webkit-scrollbar { width: 5px; }
         ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
@@ -1007,13 +1170,13 @@ export default function EventsListPage() {
 
         {/* Stats strip */}
         <div style={{ background: "#fff", borderBottom: "1px solid #f3f4f6" }}>
-          <div style={{ maxWidth: 1100, margin: "0 auto", padding: "12px 24px", display: "flex", gap: 28 }}>
+          <div style={{ maxWidth: 1100, margin: "0 auto", padding: "12px 24px", display: "flex", gap: 28, flexWrap: "wrap" }}>
             {[
               { label: "Total Events", value: events.length, color: "#111827" },
               { label: "Active / Live", value: events.filter(e => e.status === "open" || e.status === "ongoing").length, color: "#14710f" },
               { label: "Upcoming", value: events.filter(e => e.status === "upcoming").length, color: "#1a56a8" },
               { label: "Draft", value: statusCounts.draft || 0, color: "#9ca3af" },
-              // ── NEW: count how many events have a page path set ──
+              { label: "With Photo", value: events.filter(e => !!e.image_url).length, color: "#4338ca" },
               { label: "With Page Path", value: events.filter(e => !!e.page_href).length, color: "#14710f" },
             ].map(({ label, value, color }) => (
               <div key={label}>

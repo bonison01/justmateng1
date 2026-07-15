@@ -1,8 +1,28 @@
 "use client";
 
+/**
+ * ── EVENT COVER PHOTOS ──────────────────────────────────────────────
+ * Events now carry an `image_url` column (cover photo). The hero
+ * carousel at the top of the page is built primarily from *live data*:
+ * it pulls the soonest upcoming/open/ongoing events that have a photo
+ * and turns them into banner slides automatically, so the homepage
+ * always reflects what's actually coming up — no manual banner entry
+ * required. Manually curated rows in `active_banners` (promos, sponsor
+ * placements, etc.) are still supported and are shown first, with the
+ * event-photo slides filling in after them.
+ *
+ * DB migration (if the column doesn't exist yet):
+ *   alter table events add column if not exists image_url text;
+ *
+ * Photos are uploaded from the admin panel (Edit Event → Media tab),
+ * which stores them in the `event-photos` Supabase Storage bucket.
+ * See admin-events-list-page.tsx for the upload code + bucket setup.
+ * ─────────────────────────────────────────────────────────────────────
+ */
+
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -34,10 +54,16 @@ export interface DBEvent {
   sponsors: string[]; register_href?: string;
   // ── public event page path ──
   page_href?: string;
+  // ── cover photo, shown on cards, the modal, and the hero carousel ──
+  image_url?: string;
   contact_phone?: string; contact_email?: string; contact_name?: string;
   website_url?: string; maps_url?: string; social_instagram?: string; social_facebook?: string;
   lineup: LineupItem[]; schedule: ScheduleItem[]; prizes: PrizeItem[];
 }
+
+// A slide in the hero carousel — either a manually curated banner row,
+// or one auto-derived from an upcoming event's cover photo.
+type HeroSlide = Banner & { event?: DBEvent };
 
 export const CATEGORIES: { id: CategoryId; label: string; icon: string; accent: string }[] = [
   { id: "all", label: "All Events", icon: "◈", accent: "#374151" },
@@ -65,28 +91,53 @@ function StatusPill({ status }: { status: EventStatus }) {
   return <span style={{ padding: "2px 9px", borderRadius: 999, background: cfg.bg, color: cfg.color, fontSize: 11, fontWeight: 700, border: `1px solid ${cfg.color}33`, display: "inline-flex", alignItems: "center", gap: 4 }}>{status === "open" && <span style={{ width: 6, height: 6, borderRadius: "50%", background: cfg.color, display: "inline-block", animation: "pulse 2s infinite" }} />}{cfg.label}</span>;
 }
 
-function BannerCarousel({ banners }: { banners: Banner[] }) {
+// ── HERO CAROUSEL (curated banners + auto event-photo slides) ────────
+function HeroCarousel({ slides, onEventOpen }: { slides: HeroSlide[]; onEventOpen: (e: DBEvent) => void }) {
   const [idx, setIdx] = useState(0);
   const [paused, setPaused] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const startTimer = useCallback(() => { if (timerRef.current) clearInterval(timerRef.current); timerRef.current = setInterval(() => { if (!paused) setIdx(p => (p + 1) % banners.length); }, 5000); }, [banners.length, paused]);
-  useEffect(() => { if (banners.length > 1) startTimer(); return () => { if (timerRef.current) clearInterval(timerRef.current); }; }, [banners.length, startTimer]);
-  if (!banners.length) return null;
-  const cur = banners[idx];
+  const startTimer = useCallback(() => { if (timerRef.current) clearInterval(timerRef.current); timerRef.current = setInterval(() => { if (!paused) setIdx(p => (p + 1) % slides.length); }, 5000); }, [slides.length, paused]);
+  useEffect(() => { setIdx(0); }, [slides.length]);
+  useEffect(() => { if (slides.length > 1) startTimer(); return () => { if (timerRef.current) clearInterval(timerRef.current); }; }, [slides.length, startTimer]);
+  if (!slides.length) return null;
+  const cur = slides[Math.min(idx, slides.length - 1)];
+  const isExternal = cur.link_href?.startsWith("http");
+
+  const go = () => {
+    if (cur.event) { onEventOpen(cur.event); return; }
+    if (cur.link_href) {
+      if (isExternal) window.open(cur.link_href, "_blank", "noopener,noreferrer");
+      else window.location.href = cur.link_href;
+    }
+  };
+
   return (
-    <div onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)} style={{ position: "relative", width: "100%", borderRadius: 16, overflow: "hidden", background: cur.bg_color || "#0f172a", minHeight: 220 }}>
+    <div onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)} style={{ position: "relative", width: "100%", borderRadius: 20, overflow: "hidden", background: cur.bg_color || "#0f172a", minHeight: "clamp(260px, 42vw, 420px)", boxShadow: "0 24px 60px rgba(0,0,0,0.4)" }}>
       <AnimatePresence mode="wait">
-        <motion.div key={cur.id} initial={{ opacity: 0, x: 40 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -40 }} transition={{ duration: 0.38 }} style={{ position: "relative", width: "100%", minHeight: 220 }}>
-          {cur.image_url && <div style={{ position: "absolute", inset: 0, backgroundImage: `url(${cur.image_url})`, backgroundSize: "cover", backgroundPosition: "center" }}><div style={{ position: "absolute", inset: 0, background: "linear-gradient(90deg,rgba(0,0,0,0.72) 0%,rgba(0,0,0,0.28) 60%,transparent 100%)" }} /></div>}
-          <div style={{ position: "relative", padding: "36px 32px", zIndex: 1 }}>
-            <motion.h2 initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} style={{ margin: "0 0 8px", fontSize: "clamp(18px,3vw,28px)", fontWeight: 900, color: "#fff", lineHeight: 1.2, maxWidth: 480 }}>{cur.title}</motion.h2>
-            {cur.subtitle && <motion.p initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.18 }} style={{ margin: "0 0 20px", fontSize: 14, color: "rgba(255,255,255,0.78)", maxWidth: 400 }}>{cur.subtitle}</motion.p>}
-            {cur.link_href && <motion.a initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }} href={cur.link_href} style={{ display: "inline-block", padding: "10px 20px", background: "#6ee7b7", color: "#064e3b", borderRadius: 9, fontWeight: 700, fontSize: 13, textDecoration: "none" }}>{cur.link_label || "Learn More"} →</motion.a>}
+        <motion.div key={cur.id} initial={{ opacity: 0, scale: 1.03 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.45 }} style={{ position: "relative", width: "100%", minHeight: "clamp(260px, 42vw, 420px)" }}>
+          {cur.image_url && <div style={{ position: "absolute", inset: 0, backgroundImage: `url(${cur.image_url})`, backgroundSize: "cover", backgroundPosition: "center" }}><div style={{ position: "absolute", inset: 0, background: "linear-gradient(90deg,rgba(0,0,0,0.65) 0%,rgba(0,0,0,0.25) 45%,rgba(0,0,0,0.15) 65%,rgba(0,0,0,0.7) 100%)" }} /></div>}
+          <div style={{ position: "relative", padding: "clamp(24px,3.5vw,48px)", zIndex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", minHeight: "clamp(260px, 42vw, 420px)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+              {cur.event ? (
+                <>
+                  <span style={{ padding: "4px 12px", borderRadius: 999, background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.25)", color: "#fff", fontSize: 11, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase" }}>{CATEGORIES.find(c => c.id === cur.event!.category)?.label}</span>
+                  <StatusPill status={cur.event.status} />
+                </>
+              ) : (
+                <span style={{ padding: "4px 12px", borderRadius: 999, background: "rgba(110,231,183,0.18)", border: "1px solid rgba(110,231,183,0.4)", color: "#6ee7b7", fontSize: 11, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase" }}>Featured</span>
+              )}
+            </div>
+            <motion.h2 initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }} style={{ margin: "0 0 8px", fontSize: "clamp(22px,3.4vw,38px)", fontWeight: 900, color: "#fff", lineHeight: 1.14, maxWidth: 640 }}>{cur.title}</motion.h2>
+            {cur.subtitle && <motion.p initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.14 }} style={{ margin: "0 0 22px", fontSize: "clamp(13px,1.2vw,16px)", color: "rgba(255,255,255,0.85)", maxWidth: 560 }}>{cur.subtitle}</motion.p>}
+            <motion.button initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} onClick={go}
+              style={{ alignSelf: "flex-start", padding: "12px 24px", background: "#6ee7b7", color: "#064e3b", borderRadius: 10, fontWeight: 700, fontSize: 14, border: "none", cursor: "pointer" }}>
+              {cur.link_label || (cur.event ? "View Event" : "Learn More")} →
+            </motion.button>
           </div>
         </motion.div>
       </AnimatePresence>
-      {banners.length > 1 && <div style={{ position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 6, zIndex: 10 }}>{banners.map((_, i) => <button key={i} onClick={() => { setIdx(i); startTimer(); }} style={{ width: i === idx ? 24 : 8, height: 8, borderRadius: 999, background: i === idx ? "#6ee7b7" : "rgba(255,255,255,0.4)", border: "none", cursor: "pointer", padding: 0, transition: "all 0.3s" }} />)}</div>}
-      {banners.length > 1 && <><button onClick={() => { setIdx((idx - 1 + banners.length) % banners.length); startTimer(); }} style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", background: "rgba(0,0,0,0.4)", border: "none", color: "#fff", width: 34, height: 34, borderRadius: "50%", cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10 }}>‹</button><button onClick={() => { setIdx((idx + 1) % banners.length); startTimer(); }} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "rgba(0,0,0,0.4)", border: "none", color: "#fff", width: 34, height: 34, borderRadius: "50%", cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10 }}>›</button></>}
+      {slides.length > 1 && <div style={{ position: "absolute", bottom: 20, right: 24, display: "flex", gap: 7, zIndex: 10 }}>{slides.map((_, i) => <button key={i} onClick={() => { setIdx(i); startTimer(); }} style={{ width: i === idx ? 26 : 8, height: 8, borderRadius: 999, background: i === idx ? "#6ee7b7" : "rgba(255,255,255,0.4)", border: "none", cursor: "pointer", padding: 0, transition: "all 0.3s" }} />)}</div>}
+      {slides.length > 1 && <><button onClick={() => { setIdx((idx - 1 + slides.length) % slides.length); startTimer(); }} style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", background: "rgba(0,0,0,0.35)", border: "none", color: "#fff", width: 38, height: 38, borderRadius: "50%", cursor: "pointer", fontSize: 19, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10 }}>‹</button><button onClick={() => { setIdx((idx + 1) % slides.length); startTimer(); }} style={{ position: "absolute", right: 16, top: "50%", transform: "translateY(-50%)", background: "rgba(0,0,0,0.35)", border: "none", color: "#fff", width: 38, height: 38, borderRadius: "50%", cursor: "pointer", fontSize: 19, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10 }}>›</button></>}
     </div>
   );
 }
@@ -99,16 +150,29 @@ function EventCard({ event, onSelect }: { event: DBEvent; onSelect: (e: DBEvent)
   return (
     <motion.button layout initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96 }} whileHover={{ y: -4, boxShadow: "0 16px 40px rgba(0,0,0,0.13)" }} transition={{ duration: 0.22 }} onClick={() => onSelect(event)}
       style={{ all: "unset", cursor: "pointer", display: "flex", flexDirection: "column", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 16, overflow: "hidden", textAlign: "left", boxShadow: "0 1px 4px rgba(0,0,0,0.06)", ...(event.featured ? { borderTop: `3px solid ${event.accent_color}` } : {}) }}>
-      <div style={{ height: 4, background: event.accent_color + "30" }}><div style={{ height: "100%", width: event.status === "past" ? "100%" : "40%", background: event.accent_color + "80" }} /></div>
-      <div style={{ padding: "16px 18px 12px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 36, height: 36, borderRadius: 9, background: event.accent_color + "16", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: event.accent_color }}>{cat?.icon || "◈"}</div>
-            <div><span style={{ fontSize: 9, fontWeight: 800, color: event.accent_color, letterSpacing: "0.08em", textTransform: "uppercase" }}>{cat?.label}</span>{event.featured && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: "#d97706" }}>★ Featured</span>}</div>
+      {event.image_url ? (
+        <div style={{ position: "relative", height: 128, flexShrink: 0, backgroundImage: `url(${event.image_url})`, backgroundSize: "cover", backgroundPosition: "center" }}>
+          <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(0,0,0,0) 55%, rgba(0,0,0,0.45) 100%)" }} />
+          <div style={{ position: "absolute", top: 10, left: 10, display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ padding: "3px 9px", borderRadius: 999, background: "rgba(255,255,255,0.95)", fontSize: 10, fontWeight: 800, color: event.accent_color, letterSpacing: "0.05em" }}>{cat?.icon} {cat?.label}</span>
+            {event.featured && <span style={{ padding: "3px 8px", borderRadius: 999, background: "#fbbf24", fontSize: 10, fontWeight: 800, color: "#78350f" }}>★</span>}
           </div>
-          <StatusPill status={event.status} />
+          <div style={{ position: "absolute", top: 10, right: 10 }}><StatusPill status={event.status} /></div>
         </div>
-        <h3 style={{ margin: "0 0 3px", fontSize: 15, fontWeight: 800, color: "#111827", lineHeight: 1.25 }}>{event.title}</h3>
+      ) : (
+        <div style={{ height: 4, background: event.accent_color + "30" }}><div style={{ height: "100%", width: event.status === "past" ? "100%" : "40%", background: event.accent_color + "80" }} /></div>
+      )}
+      <div style={{ padding: "16px 18px 12px" }}>
+        {!event.image_url && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 9, background: event.accent_color + "16", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: event.accent_color }}>{cat?.icon || "◈"}</div>
+              <div><span style={{ fontSize: 9, fontWeight: 800, color: event.accent_color, letterSpacing: "0.08em", textTransform: "uppercase" }}>{cat?.label}</span>{event.featured && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: "#d97706" }}>★ Featured</span>}</div>
+            </div>
+            <StatusPill status={event.status} />
+          </div>
+        )}
+        <h3 style={{ margin: event.image_url ? "10px 0 3px" : "0 0 3px", fontSize: 15, fontWeight: 800, color: "#111827", lineHeight: 1.25 }}>{event.title}</h3>
         <p style={{ margin: "0 0 12px", fontSize: 12, color: "#6b7280", lineHeight: 1.4, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{event.subtitle}</p>
         <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
           {[["📅", event.date_start + (event.date_end ? ` – ${event.date_end}` : "")], ["📍", event.venue], ["🎟", event.fee_label]].map(([icon, val]) => (
@@ -120,7 +184,6 @@ function EventCard({ event, onSelect }: { event: DBEvent; onSelect: (e: DBEvent)
       </div>
       <div style={{ marginTop: "auto", padding: "10px 18px", borderTop: "1px solid #f3f4f6", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontSize: 11, color: "#9ca3af" }}>{timeAgo(event.date_start)}</span>
-        {/* Show "Learn More" hint on card footer if page_href is set */}
         <span style={{ fontSize: 12, fontWeight: 700, color: event.accent_color }}>
           {event.page_href ? "Learn More →" : "Details →"}
         </span>
@@ -143,7 +206,6 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
     ...((event.prizes?.length || 0) > 0 ? [{ id: "prizes" as TabId, label: "Prizes" }] : []),
   ];
 
-  // Resolve navigation target: page_href first, register_href as fallback
   const learnMoreHref = event.page_href || null;
   const registerHref = event.register_href || null;
   const isLearnMoreExternal = learnMoreHref?.startsWith("http");
@@ -152,21 +214,14 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
   const handleLearnMore = () => {
     if (!learnMoreHref) return;
     onClose();
-    if (isLearnMoreExternal) {
-      window.open(learnMoreHref, "_blank", "noopener,noreferrer");
-    } else {
-      router.push(learnMoreHref);
-    }
+    if (isLearnMoreExternal) window.open(learnMoreHref, "_blank", "noopener,noreferrer");
+    else router.push(learnMoreHref);
   };
-
   const handleRegister = () => {
     if (!registerHref) return;
     onClose();
-    if (isRegisterExternal) {
-      window.open(registerHref, "_blank", "noopener,noreferrer");
-    } else {
-      router.push(registerHref);
-    }
+    if (isRegisterExternal) window.open(registerHref, "_blank", "noopener,noreferrer");
+    else router.push(registerHref);
   };
 
   const isPast = event.status === "past" || event.status === "cancelled";
@@ -181,8 +236,16 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
         initial={{ opacity: 0, y: 28, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 20 }} transition={{ duration: 0.22 }}
         style={{ background: "#fff", borderRadius: 20, width: "100%", maxWidth: 620, maxHeight: "calc(100vh - 100px)", overflowY: "auto", boxShadow: "0 32px 80px rgba(0,0,0,0.25)", display: "flex", flexDirection: "column" }}
       >
+        {/* Cover photo */}
+        {event.image_url && (
+          <div style={{ position: "relative", height: 190, flexShrink: 0, borderRadius: "20px 20px 0 0", backgroundImage: `url(${event.image_url})`, backgroundSize: "cover", backgroundPosition: "center" }}>
+            <div style={{ position: "absolute", inset: 0, borderRadius: "20px 20px 0 0", background: "linear-gradient(180deg, rgba(0,0,0,0.05) 40%, rgba(0,0,0,0.55) 100%)" }} />
+            <button onClick={onClose} style={{ position: "absolute", top: 14, right: 14, background: "rgba(255,255,255,0.88)", border: "none", borderRadius: "50%", width: 32, height: 32, cursor: "pointer", fontSize: 15 }}>✕</button>
+          </div>
+        )}
+
         {/* Sticky header */}
-        <div style={{ padding: "20px 22px 0", position: "sticky", top: 0, background: "#fff", zIndex: 10, borderRadius: "20px 20px 0 0", borderBottom: "1px solid #f3f4f6", flexShrink: 0 }}>
+        <div style={{ padding: "20px 22px 0", position: "sticky", top: 0, background: "#fff", zIndex: 10, borderRadius: event.image_url ? 0 : "20px 20px 0 0", borderBottom: "1px solid #f3f4f6", flexShrink: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
             <div style={{ flex: 1, marginRight: 12 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
@@ -190,7 +253,6 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
                   {CATEGORIES.find(c => c.id === event.category)?.label.toUpperCase()}
                 </span>
                 <StatusPill status={event.status} />
-                {/* ── Page path indicator — visible to attendees as a subtle cue ── */}
                 {learnMoreHref && (
                   <span style={{ fontSize: 10, fontWeight: 600, color: "#14710f", background: "#f0fdf4", border: "1px solid #bbf7d0", padding: "2px 8px", borderRadius: 999 }}>
                     🔗 Full event page available
@@ -200,7 +262,7 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
               <h2 style={{ margin: "0 0 3px", fontSize: 19, fontWeight: 800, color: "#111827", lineHeight: 1.2 }}>{event.title}</h2>
               <p style={{ margin: 0, fontSize: 13, color: "#6b7280" }}>{event.subtitle}</p>
             </div>
-            <button onClick={onClose} style={{ background: "#f3f4f6", border: "none", borderRadius: "50%", width: 32, height: 32, cursor: "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>✕</button>
+            {!event.image_url && <button onClick={onClose} style={{ background: "#f3f4f6", border: "none", borderRadius: "50%", width: 32, height: 32, cursor: "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>✕</button>}
           </div>
           <div style={{ display: "flex", gap: 2 }}>
             {tabs.map(t => (
@@ -243,7 +305,6 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
               </div>
             )}
 
-            {/* Contact details */}
             {(event.contact_phone || event.contact_email || event.website_url || event.maps_url || event.social_instagram || event.social_facebook) && (
               <div style={{ marginTop: 16, background: "#f9fafb", borderRadius: 12, padding: "14px 16px", border: "1px solid #f3f4f6" }}>
                 <p style={{ margin: "0 0 10px", fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.08em" }}>Contact & Links</p>
@@ -358,93 +419,29 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
           )}
         </div>
 
-        {/* ── Sticky footer ── */}
+        {/* Sticky footer */}
         <div style={{ padding: "14px 22px", borderTop: "1px solid #f3f4f6", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", position: "sticky", bottom: 0, background: "#fff", borderRadius: "0 0 20px 20px", flexShrink: 0 }}>
-
-          {/* Learn More — ALWAYS visible. Active when page_href set, greyed + tooltip when not */}
           {learnMoreHref ? (
-            <button
-              onClick={handleLearnMore}
-              style={{
-                flex: 2,
-                padding: "12px 22px",
-                background: event.accent_color,
-                color: "#fff",
-                border: "none",
-                borderRadius: 10,
-                fontWeight: 700,
-                fontSize: 14,
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 6,
-                minWidth: 140,
-              }}
-            >
+            <button onClick={handleLearnMore}
+              style={{ flex: 2, padding: "12px 22px", background: event.accent_color, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 140 }}>
               {isLearnMoreExternal ? "🌐" : "→"} Learn More
             </button>
           ) : (
-            // No page_href set — show a "coming soon" pill so the slot is never empty
-            <div
-              style={{
-                flex: 2,
-                padding: "12px 22px",
-                background: "#f9fafb",
-                border: "1px dashed #d1d5db",
-                borderRadius: 10,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                minWidth: 140,
-              }}
-            >
+            <div style={{ flex: 2, padding: "12px 22px", background: "#f9fafb", border: "1px dashed #d1d5db", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 140 }}>
               <span style={{ fontSize: 13 }}>🔗</span>
               <span style={{ fontSize: 13, fontWeight: 600, color: "#9ca3af" }}>More details coming soon</span>
             </div>
           )}
-
-          {/* Register — shown when active and register_href exists */}
           {!isPast && registerHref && (
-            <button
-              onClick={handleRegister}
-              style={{
-                flex: learnMoreHref ? 1 : 2,
-                padding: "12px 22px",
-                background: learnMoreHref ? "#f3f4f6" : event.accent_color,
-                color: learnMoreHref ? "#374151" : "#fff",
-                border: learnMoreHref ? "1px solid #e5e7eb" : "none",
-                borderRadius: 10,
-                fontWeight: 700,
-                fontSize: 14,
-                cursor: "pointer",
-                minWidth: 100,
-              }}
-            >
+            <button onClick={handleRegister}
+              style={{ flex: learnMoreHref ? 1 : 2, padding: "12px 22px", background: learnMoreHref ? "#f3f4f6" : event.accent_color, color: learnMoreHref ? "#374151" : "#fff", border: learnMoreHref ? "1px solid #e5e7eb" : "none", borderRadius: 10, fontWeight: 700, fontSize: 14, cursor: "pointer", minWidth: 100 }}>
               {event.status === "postponed" ? "Get Notified" : "Register →"}
             </button>
           )}
-
-          {/* Close */}
-          <button
-            onClick={onClose}
-            style={{
-              padding: "12px 18px",
-              background: "#f3f4f6",
-              color: "#374151",
-              border: "none",
-              borderRadius: 10,
-              fontWeight: 600,
-              fontSize: 14,
-              cursor: "pointer",
-              flexShrink: 0,
-            }}
-          >
+          <button onClick={onClose}
+            style={{ padding: "12px 18px", background: "#f3f4f6", color: "#374151", border: "none", borderRadius: 10, fontWeight: 600, fontSize: 14, cursor: "pointer", flexShrink: 0 }}>
             Close
           </button>
-
-          {/* Contact quick-link */}
           {(event.contact_phone || event.contact_email) && (
             <span style={{ fontSize: 12, color: "#9ca3af", marginLeft: "auto", flexShrink: 0 }}>
               {event.contact_phone
@@ -497,8 +494,9 @@ function EventDiscoveryIllustration() {
 
 // ── MAIN PAGE ──────────────────────────────────────────────────────
 export default function EventDiscoveryPage() {
+  const searchParams = useSearchParams();
   const [activeCategory, setActiveCategory] = useState<CategoryId>("all");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(searchParams.get("search") || "");
   const [statusFilter, setStatusFilter] = useState<EventStatus | "all">("all");
   const [sortBy, setSortBy] = useState<"date" | "name">("date");
   const [selectedEvent, setSelectedEvent] = useState<DBEvent | null>(null);
@@ -507,6 +505,7 @@ export default function EventDiscoveryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => { const q = searchParams.get("search"); if (q !== null) setSearch(q); }, [searchParams]);
   useEffect(() => { supabase.from("active_banners").select("*").then(({ data, error }) => { if (!error && data) setBanners(data as Banner[]); }); }, []);
   useEffect(() => { setLoading(true); setError(null); supabase.from("events_full").select("*").neq("status", "draft").then(({ data, error }) => { if (error) setError(error.message); else setEvents((data || []) as DBEvent[]); setLoading(false); }); }, []);
 
@@ -524,79 +523,57 @@ export default function EventDiscoveryPage() {
   }, [events, activeCategory, search, statusFilter, sortBy]);
 
   const counts = useMemo(() => { const c: Record<string, number> = { all: events.length }; CATEGORIES.forEach(cat => { c[cat.id] = events.filter(e => e.category === cat.id).length; }); return c; }, [events]);
-  const featured = events.filter(e => e.featured).slice(0, 5);
+
+  // Auto-build hero slides from curated banners + upcoming/open/ongoing events
+  // that have a cover photo, soonest & featured first, capped at 6.
+  const heroSlides: HeroSlide[] = useMemo(() => {
+    const curated: HeroSlide[] = banners
+      .slice()
+      .sort((a, b) => a.display_order - b.display_order)
+      .map(b => ({ ...b }));
+    const eventSlides: HeroSlide[] = events
+      .filter(e => e.image_url && (e.status === "upcoming" || e.status === "open" || e.status === "ongoing"))
+      .sort((a, b) => (Number(b.featured) - Number(a.featured)) || a.date_start.localeCompare(b.date_start))
+      .slice(0, 6)
+      .map(e => ({
+        id: `ev-${e.id}`,
+        title: e.title,
+        subtitle: `${e.date_start}${e.date_end ? ` – ${e.date_end}` : ""} · ${e.venue}, ${e.city}`,
+        image_url: e.image_url!,
+        bg_color: e.accent_color,
+        display_order: 0,
+        event: e,
+      }));
+    return [...curated, ...eventSlides].slice(0, 8);
+  }, [banners, events]);
 
   return (
     <>
-      <style>{`@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(1.5)}} @keyframes shimmer{0%,100%{opacity:1}50%{opacity:.5}} *{box-sizing:border-box} ::-webkit-scrollbar{width:5px} ::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:4px} input:focus,select:focus{outline:none} @media(max-width:768px){.hero-right-panel{display:none!important}}`}</style>
+      <style>{`@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(1.5)}} @keyframes shimmer{0%,100%{opacity:1}50%{opacity:.5}} *{box-sizing:border-box} ::-webkit-scrollbar{width:5px} ::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:4px} input:focus,select:focus{outline:none}`}</style>
       <div style={{ minHeight: "100vh", background: "#f0f2f5", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
 
-        {/* HERO */}
-        <div style={{ background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)", padding: "48px 24px 36px" }}>
-          <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 36, flexWrap: "wrap" }}>
-              <div style={{ flex: "1 1 380px" }}>
-                <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.55 }}>
-                  <span style={{ display: "inline-block", padding: "3px 12px", borderRadius: 999, background: "rgba(255,255,255,0.08)", color: "#94a3b8", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", marginBottom: 14 }}>MANIPUR EVENT DISCOVERY</span>
-                  <h1 style={{ margin: "0 0 12px", fontSize: "clamp(24px,4vw,40px)", fontWeight: 900, color: "#fff", lineHeight: 1.12, letterSpacing: "-0.03em" }}>Every Event.<br /><span style={{ color: "#6ee7b7" }}>One Platform.</span></h1>
-                  <p style={{ margin: "0 0 24px", fontSize: 15, color: "#94a3b8", lineHeight: 1.65, maxWidth: 420 }}>Concerts, summits, medical conclaves, education fests, cultural festivals, sports championships, workshops and exhibitions — all in one place.</p>
-                  <div style={{ display: "flex", gap: 28, flexWrap: "wrap", marginBottom: 28 }}>
-                    {([[events.length, "Events"], [events.filter(e => e.status === "open" || e.status === "upcoming").length, "Upcoming"], [CATEGORIES.length - 1, "Categories"]] as [number, string][]).map(([n, l]) => (
-                      <div key={l}><p style={{ margin: 0, fontSize: 26, fontWeight: 900, color: "#fff" }}>{n}</p><p style={{ margin: 0, fontSize: 11, color: "#64748b", fontWeight: 600 }}>{l}</p></div>
-                    ))}
-                  </div>
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    <a href="/businesses" style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 18px", background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, color: "#fff", fontSize: 13, fontWeight: 600, textDecoration: "none", backdropFilter: "blur(4px)" }}>
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="12" height="11" rx="2" /><line x1="2" y1="7" x2="14" y2="7" /><line x1="5" y1="1.5" x2="5" y2="4.5" /><line x1="11" y1="1.5" x2="11" y2="4.5" /></svg>
-                      Discover Businesses
-                    </a>
-                    <a href="/delivery-rates" style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 18px", background: "#6ee7b7", border: "1px solid transparent", borderRadius: 10, color: "#064e3b", fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="1" y="6" width="10" height="7" rx="1" /><path d="M11 8h2.2l1.8 3v2h-4V8z" /><circle cx="4" cy="13.5" r="1.2" fill="currentColor" stroke="none" /><circle cx="12" cy="13.5" r="1.2" fill="currentColor" stroke="none" /></svg>
-                      Delivery Service
-                    </a>
-                  </div>
-                </motion.div>
+        {/* HERO — full-bleed banner carousel only, no headline text module */}
+        <div style={{ background: "#fff", padding: "24px 24px 0" }}>
+          <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+            {heroSlides.length > 0 ? (
+              <HeroCarousel slides={heroSlides} onEventOpen={setSelectedEvent} />
+            ) : !loading ? (
+              <div style={{ background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)", borderRadius: 20 }}>
+                <EventDiscoveryIllustration />
               </div>
-              <div className="hero-right-panel" style={{ flex: "0 0 340px", maxWidth: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
-                {featured.length > 0 ? (
-                  <>
-                    <p style={{ margin: "0 0 10px", fontSize: 10, fontWeight: 800, color: "#64748b", letterSpacing: "0.1em" }}>FEATURED EVENTS</p>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      {featured.map(ev => {
-                        const cat = CATEGORIES.find(c => c.id === ev.category);
-                        return (
-                          <motion.button key={ev.id} whileHover={{ x: 3 }} onClick={() => setSelectedEvent(ev)}
-                            style={{ all: "unset", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, background: "rgba(255,255,255,0.07)", borderLeft: `3px solid ${ev.accent_color}`, borderRadius: "0 10px 10px 0", padding: "10px 14px", textAlign: "left" }}>
-                            <div style={{ width: 36, height: 36, borderRadius: 8, flexShrink: 0, background: ev.accent_color + "30", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: ev.accent_color }}>{cat?.icon || "◈"}</div>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ev.title}</p>
-                              <p style={{ margin: "1px 0 0", fontSize: 11, color: "#9ca3af" }}>{ev.date_start} · {ev.city}</p>
-                            </div>
-                            <StatusPill status={ev.status} />
-                          </motion.button>
-                        );
-                      })}
-                    </div>
-                    <div style={{ position: "relative", maxWidth: 480 }}>
-                      <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", fontSize: 15, color: "#94a3b8" }}>🔍</span>
-                      <input type="text" placeholder="Search events, artists, topics, venues…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: "100%", padding: "13px 40px 13px 44px", fontSize: 14, border: "1.5px solid transparent", borderRadius: 12, background: "#fff", color: "#111827", boxShadow: "0 4px 18px rgba(0,0,0,0.18)" }} />
-                      {search && <button onClick={() => setSearch("")} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 16 }}>✕</button>}
-                    </div>
-                  </>
-                ) : (
-                  <EventDiscoveryIllustration />
-                )}
-              </div>
-            </div>
+            ) : null}
           </div>
         </div>
 
-        {/* BANNER CAROUSEL */}
-        {banners.length > 0 && <div style={{ maxWidth: 1100, margin: "28px auto 0", padding: "0 20px" }}><BannerCarousel banners={banners} /></div>}
+        {/* EXPLORE EVENTS HEADING */}
+        <div style={{ maxWidth: 1140, margin: "0 auto", padding: "28px 20px 0" }}>
+          <h1 style={{ margin: 0, fontSize: "clamp(24px,3vw,32px)", fontWeight: 900, color: "#111827", letterSpacing: "-0.02em" }}>Explore Events</h1>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: "#6b7280" }}>Concerts, summits, medical conclaves, education fests, cultural festivals, sports championships, workshops and exhibitions — all in Manipur, all in one place.</p>
+        </div>
 
         {/* CATEGORY TABS */}
-        <div style={{ background: "#fff", borderBottom: "1px solid #e5e7eb", position: "sticky", top: 0, zIndex: 100, marginTop: banners.length > 0 ? 24 : 0, overflowX: "auto" }}>
-          <div style={{ maxWidth: 1100, margin: "0 auto", display: "flex", padding: "0 16px" }}>
+        <div style={{ background: "#fff", borderBottom: "1px solid #e5e7eb", position: "sticky", top: 0, zIndex: 100, overflowX: "auto", marginTop: 20 }}>
+          <div style={{ maxWidth: 1140, margin: "0 auto", display: "flex", padding: "0 16px" }}>
             {CATEGORIES.map(cat => {
               const active = activeCategory === cat.id;
               return (
@@ -611,10 +588,16 @@ export default function EventDiscoveryPage() {
         </div>
 
         {/* BODY */}
-        <div style={{ maxWidth: 1100, margin: "0 auto", padding: "28px 20px 64px" }}>
+        <div style={{ maxWidth: 1140, margin: "0 auto", padding: "28px 20px 64px" }}>
           {error && <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: "14px 18px", marginBottom: 20, color: "#991b1b", fontSize: 14 }}>Failed to load events: {error}. Check Supabase credentials in .env.local</div>}
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22, gap: 10, flexWrap: "wrap" }}>
+            <div style={{ position: "relative", flex: "0 1 320px", minWidth: 200 }}>
+              <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: "#9ca3af" }}>🔍</span>
+              <input type="text" placeholder="Search events, venues, tags…" value={search} onChange={e => setSearch(e.target.value)}
+                style={{ width: "100%", padding: "8px 32px 8px 32px", fontSize: 12.5, border: "1px solid #e5e7eb", borderRadius: 999, background: "#f9fafb", color: "#111827" }} />
+              {search && <button onClick={() => setSearch("")} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>}
+            </div>
             <p style={{ margin: 0, fontSize: 13, color: "#6b7280" }}><strong style={{ color: "#111827" }}>{filtered.length}</strong> events{activeCategory !== "all" && ` · ${CATEGORIES.find(c => c.id === activeCategory)?.label}`}</p>
             <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
               {(["all", "upcoming", "open", "past", "postponed"] as const).map(s => (

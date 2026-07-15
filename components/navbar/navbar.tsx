@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
-import { ArrowRight, LogOut, BadgeCheck } from "lucide-react";
+import React, { useState, useRef, useEffect } from "react";
+import { ArrowRight, LogOut, BadgeCheck, Search, X } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import {
     DropdownMenu,
@@ -25,6 +25,9 @@ type NavLink =
 
 function Navbar() {
     const [isNavOpen, setNavOpen] = useState<boolean>(false);
+    const [isSearchOpen, setSearchOpen] = useState<boolean>(false);
+    const [searchQuery, setSearchQuery] = useState<string>("");
+    const searchInputRef = useRef<HTMLInputElement | null>(null);
     const pathname = usePathname();
     const router = useRouter();
     const dispatch = useDispatch();
@@ -32,6 +35,33 @@ function Navbar() {
 
     const toggleNav = () => setNavOpen((prev) => !prev);
     const closedNav = () => setNavOpen(false);
+
+    const openSearch = () => {
+        setSearchOpen(true);
+        setNavOpen(false);
+    };
+    const closeSearch = () => {
+        setSearchOpen(false);
+        setSearchQuery("");
+    };
+
+    const submitSearch = (e?: React.FormEvent) => {
+        e?.preventDefault();
+        const q = searchQuery.trim();
+        if (!q) return;
+        router.push(`/events?search=${encodeURIComponent(q)}`);
+        closeSearch();
+    };
+
+    useEffect(() => {
+        if (isSearchOpen) searchInputRef.current?.focus();
+    }, [isSearchOpen]);
+
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => { if (e.key === "Escape") closeSearch(); };
+        document.addEventListener("keydown", handler);
+        return () => document.removeEventListener("keydown", handler);
+    }, []);
 
     const handleLogout = () => {
         localStorage.clear();
@@ -46,6 +76,16 @@ function Navbar() {
         { name: "Delivery Service", href: "https://matengdelivery.com/" },
         { name: "Events", href: "/events" },
     ];
+
+    const SearchButton = ({ className = "" }: { className?: string }) => (
+        <button
+            onClick={openSearch}
+            aria-label="Search"
+            className={`w-9 h-9 flex items-center justify-center rounded-full text-white/80 border border-gray-400/50 bg-white/5 hover:bg-white/10 hover:text-white transition ${className}`}
+        >
+            <Search size={16} />
+        </button>
+    );
 
     const UserGreeting = () => (
         <DropdownMenu>
@@ -124,8 +164,40 @@ function Navbar() {
     return (
         <div className="w-full fixed top-0 z-[10000] sm:px-4 bg-gradient-to-r from-[#131316d9] via-[#222226a6] to-[#131316d9] backdrop-blur-sm">
 
+            {/* SEARCH OVERLAY BAR — replaces the nav row while open, same spot on desktop & mobile */}
+            {isSearchOpen && (
+                <form
+                    onSubmit={submitSearch}
+                    className="h-16 flex items-center gap-3 px-4"
+                >
+                    <Search size={18} className="text-white/50 flex-shrink-0" />
+                    <input
+                        ref={searchInputRef}
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search events, artists, venues, businesses…"
+                        className="flex-1 bg-transparent outline-none text-white placeholder:text-white/40 text-sm"
+                    />
+                    <button
+                        type="submit"
+                        className="hidden sm:inline-flex px-4 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white text-xs font-semibold transition"
+                    >
+                        Search
+                    </button>
+                    <button
+                        type="button"
+                        onClick={closeSearch}
+                        aria-label="Close search"
+                        className="w-8 h-8 flex items-center justify-center rounded-full text-white/70 hover:text-white hover:bg-white/10 transition flex-shrink-0"
+                    >
+                        <X size={18} />
+                    </button>
+                </form>
+            )}
+
             {/* DESKTOP NAV */}
-            <div className="hidden lg:flex justify-between items-center h-16 px-4">
+            <div className={`hidden lg:flex justify-between items-center h-16 px-4 ${isSearchOpen ? "!hidden" : ""}`}>
                 <Link href="/home">
                     <div className="h-16 flex items-center p-2 pl-0">
                         <img src="/logo.png" alt="logo" className="h-full object-contain" />
@@ -167,27 +239,32 @@ function Navbar() {
                     )}
                 </div>
 
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3">
+                    <SearchButton />
                     {user ? <UserGreeting /> : <LoginDropdown />}
                 </div>
             </div>
 
             {/* MOBILE TOP BAR */}
-            <div className="lg:hidden h-16 flex justify-between items-center px-4">
+            <div className={`lg:hidden h-16 flex justify-between items-center px-4 ${isSearchOpen ? "!hidden" : ""}`}>
                 <Link href="/home">
                     <img src="/logo.png" alt="logo" className="w-32" />
                 </Link>
 
-                {/* Hamburger */}
-                <button
-                    onClick={toggleNav}
-                    className="flex flex-col justify-center gap-[5px] w-8 h-8 p-1"
-                    aria-label="Toggle menu"
-                >
-                    <span className={`block h-0.5 bg-white rounded transition-all duration-300 ${isNavOpen ? "rotate-45 translate-y-[7px]" : ""}`} />
-                    <span className={`block h-0.5 bg-white rounded transition-all duration-300 ${isNavOpen ? "opacity-0" : ""}`} />
-                    <span className={`block h-0.5 bg-white rounded transition-all duration-300 ${isNavOpen ? "-rotate-45 -translate-y-[7px]" : ""}`} />
-                </button>
+                <div className="flex items-center gap-2">
+                    <SearchButton />
+
+                    {/* Hamburger */}
+                    <button
+                        onClick={toggleNav}
+                        className="flex flex-col justify-center gap-[5px] w-8 h-8 p-1"
+                        aria-label="Toggle menu"
+                    >
+                        <span className={`block h-0.5 bg-white rounded transition-all duration-300 ${isNavOpen ? "rotate-45 translate-y-[7px]" : ""}`} />
+                        <span className={`block h-0.5 bg-white rounded transition-all duration-300 ${isNavOpen ? "opacity-0" : ""}`} />
+                        <span className={`block h-0.5 bg-white rounded transition-all duration-300 ${isNavOpen ? "-rotate-45 -translate-y-[7px]" : ""}`} />
+                    </button>
+                </div>
             </div>
 
             {/* MOBILE NAV MENU */}

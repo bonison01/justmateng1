@@ -235,7 +235,7 @@ export default function Page() {
           </p>
 
           <div className="relative flex flex-col sm:flex-row gap-4 mt-10">
-            <Link href="/events/matengfest">
+            <Link href="/events">
               <button
                 className="px-8 py-3 rounded-full font-semibold text-[#0B1410] transition-all duration-200 hover:-translate-y-0.5"
                 style={{ background: "#3FA637" }}
