@@ -1,3 +1,4 @@
+///Users/apple/Documents/justmateng1/app/(main)/admin/(protected)/cargo/InvoiceTemplate.tsx
 import React from "react";
 
 export interface InvoiceBooking {

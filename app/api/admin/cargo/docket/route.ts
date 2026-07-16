@@ -34,6 +34,7 @@ interface DocketPayload {
   total_items: number;
   total_weight: number;
   total_charges: number;
+  docket_charge?: number;
   bags: DocketBagPayload[];
 }
 
@@ -43,6 +44,18 @@ interface DocketPayload {
 // untyped. These interfaces + casts keep everything below explicit.
 // ---------------------------------------------------------------------------
 
+interface PaymentEntry {
+  total: number;
+  paid: number;
+  status: "paid" | "unpaid" | "partial";
+}
+
+interface DocketPayments {
+  packaging?: PaymentEntry;
+  delivery?: PaymentEntry;
+  docket_charge?: PaymentEntry;
+}
+
 interface DocketRow {
   id: string;
   docket_number: string;
@@ -50,6 +63,9 @@ interface DocketRow {
   total_items: number;
   total_weight: number;
   total_charges: number;
+  status: string;
+  docket_charge: number;
+  payments: DocketPayments;
   created_at: string;
   updated_at: string;
 }
@@ -71,6 +87,9 @@ interface ItemRow {
   pickup_charge: number;
   parcel_type: string;
   other_charges: number;
+  invoice_booking_id: string | null;
+  invoice_amount: number | null;
+  invoice_created_at: string | null;
   created_at: string;
 }
 
@@ -178,6 +197,25 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Sum packaging/delivery charges across every item in the docket so the
+  // edit modal can track payment against those two categories separately.
+  const allItems: DocketItemPayload[] = body.bags.flatMap((b: DocketBagPayload) => b.items);
+  const totalPackaging = allItems.reduce(
+    (s: number, it: DocketItemPayload) => s + (Number(it.packaging_charge) || 0),
+    0
+  );
+  const totalDelivery = allItems.reduce(
+    (s: number, it: DocketItemPayload) => s + (Number(it.delivery_charge) || 0),
+    0
+  );
+  const docketCharge = Number(body.docket_charge) || 0;
+
+  const payments: DocketPayments = {
+    packaging: { total: totalPackaging, paid: 0, status: "unpaid" },
+    delivery: { total: totalDelivery, paid: 0, status: "unpaid" },
+    docket_charge: { total: docketCharge, paid: 0, status: "unpaid" },
+  };
+
   // 1. Insert the docket
   const { data: docket, error: docketErr } = await supabaseAdmin
     .from("cargo_dockets")
@@ -187,6 +225,9 @@ export async function POST(req: NextRequest) {
       total_items: body.total_items,
       total_weight: body.total_weight,
       total_charges: body.total_charges,
+      status: "Pending",
+      docket_charge: docketCharge,
+      payments,
     })
     .select()
     .single();

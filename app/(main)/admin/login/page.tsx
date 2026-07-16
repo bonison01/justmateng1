@@ -21,29 +21,62 @@ function AdminLoginContent() {
     setLoading(true);
 
     try {
-      // Dedicated admin endpoint — checks the separate `admins` table,
-      // not the customer table that /api/login checks.
-      const res = await fetch('/api/admin/login', {
+      // Single form, two possible accounts. Try the admin table first —
+      // most people landing on this page are admins, so this keeps the
+      // common case to one request. Only on an actual "wrong
+      // credentials" result do we retry against the staff table, so a
+      // real server error (500) on the admin check surfaces immediately
+      // instead of being masked by a second failing request.
+      const adminRes = await fetch('/api/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ emailOrPhone, password }),
       });
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(data.message || 'Login failed.');
+      if (adminRes.ok) {
+        // Session cookie is set server-side as httpOnly by the API
+        // route above — there is nothing to store here. It can't (and
+        // shouldn't) be read by client JS; that's what makes it secure
+        // against XSS-based token theft. middleware.ts verifies it on
+        // every request to /admin/*.
+        router.push(redirect);
         return;
       }
 
-      // The session cookie is set server-side as httpOnly by the API
-      // route above — there is nothing to store here. It can't (and
-      // shouldn't) be read by client JS; that's what makes it secure
-      // against XSS-based token theft. middleware.ts verifies it on
-      // every request to /admin/*.
+      if (adminRes.status !== 401) {
+        const adminData = await adminRes.json().catch(() => ({}));
+        setError(adminData.message || 'Login failed.');
+        return;
+      }
+
+      // Admin check said "invalid credentials" — try staff before
+      // giving up, rather than assuming the person typed something
+      // wrong.
+      const staffRes = await fetch('/api/staff/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emailOrPhone, password }),
+      });
+
+      const staffData = await staffRes.json().catch(() => ({}));
+
+      if (!staffRes.ok) {
+        if (staffRes.status === 401) {
+          // Neither account matched — show one generic message rather
+          // than revealing which check failed.
+          setError('Invalid credentials.');
+        } else {
+          // The staff endpoint itself failed (500, etc.) — this is NOT
+          // the same as a wrong password, and hiding that distinction
+          // makes a broken server look like a typo. Surface it plainly.
+          setError(staffData.message || 'Something went wrong checking staff login. Please try again.');
+        }
+        return;
+      }
+
       router.push(redirect);
     } catch (err) {
-      console.error('Admin login error:', err);
+      console.error('Login error:', err);
       setError('Something went wrong. Please try again.');
     } finally {
       setLoading(false);
@@ -74,7 +107,7 @@ function AdminLoginContent() {
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <h1 style={{ fontSize: 20, fontWeight: 800, color: '#111827', margin: 0 }}>Admin Login</h1>
           <p style={{ fontSize: 13, color: '#6b7280', marginTop: 6 }}>
-            Restricted area. Staff credentials only.
+            Restricted area. Staff and admin credentials both work here.
           </p>
         </div>
 

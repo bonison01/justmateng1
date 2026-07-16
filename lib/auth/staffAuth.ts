@@ -24,7 +24,24 @@ import type { SectionKey } from "@/lib/permissions";
 
 export const STAFF_SESSION_COOKIE_NAME = "staff_session";
 
-const secret = new TextEncoder().encode(process.env.STAFF_SESSION_SECRET!);
+const staffSessionSecretEnv = process.env.STAFF_SESSION_SECRET;
+
+if (!staffSessionSecretEnv) {
+  // Without this check, `new TextEncoder().encode(undefined!)` silently
+  // encodes the *string* "undefined" (or an empty string, depending on
+  // engine), and jose then fails deep inside SignJWT.sign() with an
+  // opaque crypto error — which is exactly the kind of thing that looks
+  // like "login works until you actually submit it" and gives no clue
+  // why. Failing loudly here, at import time, points straight at the
+  // missing env var instead.
+  throw new Error(
+    "STAFF_SESSION_SECRET is not set. Add it to your .env file (a long random string, separate from " +
+      "whatever secret signs the admin cookie), then restart the dev server — Next.js only reads .env " +
+      "changes on startup, not on hot reload."
+  );
+}
+
+const secret = new TextEncoder().encode(staffSessionSecretEnv);
 
 export interface StaffSessionPayload {
   staffId: string;
@@ -114,4 +131,31 @@ export async function hashPassword(password: string) {
 
 export async function verifyPassword(password: string, hash: string) {
   return bcrypt.compare(password, hash);
+}
+
+// Full list of sections a staff session can reach — used by the
+// dashboard to only show cards for sections the person actually has
+// access to, rather than every section that exists. Unlike
+// requireStaffSection (which checks one specific section and is meant
+// for guarding a page), this is a display concern: returns [] for no
+// session, no role, or a disabled account, same as requireStaffSection
+// would treat those as "no access" rather than throwing.
+export async function getStaffAllowedSections(): Promise<SectionKey[]> {
+  const session = await getStaffSession();
+  if (!session || !session.roleId) return [];
+
+  const { data: staff } = await supabase
+    .from("staff")
+    .select("status")
+    .eq("id", session.staffId)
+    .single();
+
+  if (!staff || staff.status !== "active") return [];
+
+  const { data: perms } = await supabase
+    .from("staff_role_permissions")
+    .select("section")
+    .eq("role_id", session.roleId);
+
+  return (perms ?? []).map(p => p.section as SectionKey);
 }

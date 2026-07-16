@@ -4,8 +4,10 @@ import { supabaseAdmin as supabase } from "@/lib/supabaseAdmin";
 import { getAdminSession } from "@/lib/auth/session";
 import { isSectionKey } from "@/lib/permissions";
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params;
+
     const admin = await getAdminSession();
     if (!admin) return NextResponse.json({ message: "Unauthorized." }, { status: 401 });
 
@@ -16,7 +18,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       if (name !== undefined) update.name = name;
       if (description !== undefined) update.description = description;
 
-      const { error } = await supabase.from("staff_roles").update(update).eq("id", params.id);
+      const { error } = await supabase.from("staff_roles").update(update).eq("id", id);
       if (error) {
         const message = error.code === "23505" ? "A role with that name already exists." : error.message;
         return NextResponse.json({ message }, { status: 400 });
@@ -34,7 +36,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       const { error: deleteError } = await supabase
         .from("staff_role_permissions")
         .delete()
-        .eq("role_id", params.id);
+        .eq("role_id", id);
       if (deleteError) {
         return NextResponse.json({ message: deleteError.message }, { status: 400 });
       }
@@ -42,7 +44,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       if (validSections.length) {
         const { error: insertError } = await supabase
           .from("staff_role_permissions")
-          .insert(validSections.map(section => ({ role_id: params.id, section })));
+          .insert(validSections.map(section => ({ role_id: id, section })));
         if (insertError) {
           return NextResponse.json({ message: insertError.message }, { status: 400 });
         }
@@ -56,8 +58,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params;
+
     const admin = await getAdminSession();
     if (!admin) return NextResponse.json({ message: "Unauthorized." }, { status: 401 });
 
@@ -65,7 +69,7 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
     // foreign key's ON DELETE SET NULL — which requireStaffSection()
     // treats as "no_role" (fully locked out). Deleting a role revokes
     // access rather than silently leaving it open.
-    const { error } = await supabase.from("staff_roles").delete().eq("id", params.id);
+    const { error } = await supabase.from("staff_roles").delete().eq("id", id);
     if (error) {
       return NextResponse.json({ message: error.message }, { status: 400 });
     }

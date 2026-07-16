@@ -4,8 +4,10 @@ import { supabaseAdmin as supabase } from "@/lib/supabaseAdmin";
 import { getAdminSession } from "@/lib/auth/session";
 import { hashPassword } from "@/lib/auth/staffAuth";
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params;
+
     const admin = await getAdminSession();
     if (!admin) return NextResponse.json({ message: "Unauthorized." }, { status: 401 });
 
@@ -27,10 +29,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       update.password_hash = await hashPassword(password);
     }
 
-    const { error } = await supabase.from("staff").update(update).eq("id", params.id);
+    const { error } = await supabase.from("staff").update(update).eq("id", id);
 
     if (error) {
-      console.error("Update staff error:", error);
+      console.error("Update staff error (Supabase):", error);
       return NextResponse.json({ message: error.message }, { status: 400 });
     }
 
@@ -44,12 +46,14 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params;
+
     const admin = await getAdminSession();
     if (!admin) return NextResponse.json({ message: "Unauthorized." }, { status: 401 });
 
-    const { error } = await supabase.from("staff").delete().eq("id", params.id);
+    const { error } = await supabase.from("staff").delete().eq("id", id);
 
     if (error) {
       return NextResponse.json({ message: error.message }, { status: 400 });

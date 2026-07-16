@@ -1,17 +1,47 @@
 // app/api/admin/cargo/bookings/route.ts
+//
+// GET: returns all cargo bookings for the admin dashboard.
+// POST: creates a new booking (multipart/form-data — see bookingPage),
+// including optional photo upload to Storage and payment logging.
+// Both use the Supabase SERVICE ROLE key (bypasses RLS) — safe here
+// because this route itself re-checks the session first.
+//
+// AUTH: requireAdmin(req) only recognizes admin sessions — it predates
+// the staff/role system and has no idea requireStaffSection exists. So
+// a staff member with "cargo" access gets past the page-level layout
+// guard (cargo/layout.tsx) just fine, then hits this route and is
+// rejected as "not authenticated" the moment it tries to load data.
+// The fix: if requireAdmin fails, fall back to checking for a valid
+// staff session with "cargo" in their role before giving up. This
+// leaves requireAdmin and its existing behavior completely untouched —
+// admins hit the exact same code path as before.
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { requireAdmin } from "@/lib/auth/requireAdmin";
+import { requireStaffSection } from "@/lib/auth/staffAuth";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+// Returns null if either an admin session or a staff session with
+// "cargo" access is present. Returns the original 401 response
+// otherwise, so callers can `return` it unchanged.
+async function requireCargoAccess(req: NextRequest) {
+  const adminAuth = await requireAdmin(req);
+  if (!("error" in adminAuth)) return null;
+
+  const staffResult = await requireStaffSection("cargo");
+  if (staffResult.ok) return null;
+
+  return adminAuth.error;
+}
+
 export async function GET(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if ("error" in auth) return auth.error;
+  const authError = await requireCargoAccess(req);
+  if (authError) return authError;
 
   const { data, error } = await supabaseAdmin
     .from("cargo_bookings")
@@ -20,139 +50,72 @@ export async function GET(req: NextRequest) {
 
   if (error) {
     console.error("Admin cargo bookings fetch error:", error);
-    return NextResponse.json(
-      { message: error.message || "Could not load bookings." },
-      { status: 500 }
-    );
+    return NextResponse.json({ message: error.message || "Could not load bookings." }, { status: 500 });
   }
 
   return NextResponse.json({ data: data ?? [] });
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if ("error" in auth) return auth.error;
+  const authError = await requireCargoAccess(req);
+  if (authError) return authError;
 
-  let payload: Record<string, unknown>;
-  let photoFile: File | null = null;
+  try {
+    const formData = await req.formData();
 
-  const contentType = req.headers.get("content-type") ?? "";
-
-  if (contentType.includes("multipart/form-data")) {
-    const fd = await req.formData();
-    const raw = fd.get("payload");
-    if (!raw || typeof raw !== "string") {
-      return NextResponse.json({ message: "Missing payload field." }, { status: 400 });
+    // Pull the JSON payload (everything except the file) out of one field.
+    const payloadRaw = formData.get("payload");
+    if (typeof payloadRaw !== "string") {
+      return NextResponse.json({ message: "Missing booking payload." }, { status: 400 });
     }
-    payload = JSON.parse(raw);
-    const photo = fd.get("photo");
-    if (photo instanceof File) photoFile = photo;
-  } else {
-    payload = await req.json();
-  }
+    const payload = JSON.parse(payloadRaw);
+    const photoFile = formData.get("photo") as File | null;
+    const trackingId = payload.tracking_id as string;
 
-  // Upload photo if present
-  let photo_url: string | null = null;
-  if (photoFile) {
-    const ext = photoFile.name.split(".").pop() ?? "jpg";
-    const path = `cargo/${Date.now()}.${ext}`;
-    const { error: upErr } = await supabaseAdmin.storage
-      .from("cargo-photos")
-      .upload(path, photoFile, { contentType: photoFile.type, upsert: false });
-    if (!upErr) {
-      const { data: urlData } = supabaseAdmin.storage
+    let photo_url = "";
+    if (photoFile && photoFile.size > 0) {
+      const arrayBuffer = await photoFile.arrayBuffer();
+      const path = `bookings/${trackingId}-${photoFile.name}`;
+      const { error: uploadError } = await supabaseAdmin.storage
         .from("cargo-photos")
-        .getPublicUrl(path);
-      photo_url = urlData.publicUrl ?? null;
-    } else {
-      console.warn("Photo upload failed (non-fatal):", upErr.message);
+        .upload(path, Buffer.from(arrayBuffer), {
+          upsert: true,
+          contentType: photoFile.type || undefined,
+        });
+      if (uploadError) {
+        console.error("Photo upload error:", uploadError);
+        return NextResponse.json({ message: uploadError.message }, { status: 500 });
+      }
+      const { data: publicUrl } = supabaseAdmin.storage.from("cargo-photos").getPublicUrl(path);
+      photo_url = publicUrl.publicUrl;
     }
+
+    const { data: inserted, error: insertError } = await supabaseAdmin
+      .from("cargo_bookings")
+      .insert({ ...payload, photo_url })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error("Booking insert error:", insertError);
+      return NextResponse.json({ message: insertError.message }, { status: 500 });
+    }
+
+    // Log a payment record if relevant — same conditions as before.
+    if (payload.customer_id && payload.amount_paid > 0) {
+      const note =
+        payload.payment_status === "partial" ? "Partial payment at booking" : "Paid at booking";
+      await supabaseAdmin.from("cargo_payments").insert({
+        customer_id: payload.customer_id,
+        booking_id: inserted.id,
+        amount: payload.amount_paid,
+        note,
+      });
+    }
+
+    return NextResponse.json({ data: inserted });
+  } catch (err) {
+    console.error("Booking create error:", err);
+    return NextResponse.json({ message: "Could not create booking." }, { status: 500 });
   }
-
-  const {
-    customer_id,
-    tracking_id,
-    sender_name,
-    sender_phone,
-    sender_address,
-    sender_city_state,
-    sender_pincode,
-    receiver_name,
-    receiver_phone,
-    receiver_address,
-    receiver_city_state,
-    receiver_pincode,
-    product_name,
-    weight_estimate,
-    delivery_mode,
-    pickup_required,
-    delivery_required,
-    notes,
-    status,
-    third_party_tracking,
-    handling_charge,
-    docket_charge,
-    pickup_charge,
-    packaging_charge,
-    extra_mile_delivery,
-    estimate_charge,
-    final_charge,
-    payment_status,
-    amount_paid,
-  } = payload as Record<string, unknown>;
-
-  const { data, error } = await supabaseAdmin
-    .from("cargo_bookings")
-    .insert({
-      customer_id: customer_id ?? null,
-      tracking_id,
-      sender_name,
-      sender_phone,
-      sender_address,
-      sender_city_state,
-      sender_pincode,
-      receiver_name,
-      receiver_phone,
-      receiver_address,
-      receiver_city_state,
-      receiver_pincode,
-      product_name,
-      weight_estimate,
-      delivery_mode,
-      pickup_required: pickup_required ?? false,
-      delivery_required: delivery_required ?? false,
-      notes,
-      status: status ?? "Pending",
-      third_party_tracking,
-      handling_charge: handling_charge ?? null,
-      docket_charge: docket_charge ?? null,
-      pickup_charge: pickup_charge ?? null,
-      packaging_charge: packaging_charge ?? null,
-      extra_mile_delivery: extra_mile_delivery ?? null,
-      estimate_charge,
-      final_charge: final_charge ?? null,
-      payment_status: payment_status ?? "unpaid",
-      amount_paid: amount_paid ?? 0,
-      photo_url,
-    })
-    .select()
-    .single();
-
-  if (error) {
-    console.error("Booking create error:", error);
-    return NextResponse.json({ message: error.message }, { status: 500 });
-  }
-
-  // Record a payment row if money was collected at booking time
-  if (customer_id && typeof amount_paid === "number" && amount_paid > 0) {
-    const { error: pErr } = await supabaseAdmin.from("cargo_payments").insert({
-      customer_id,
-      booking_id: data.id,
-      amount: amount_paid,
-      note: "Recorded at booking",
-    });
-    if (pErr) console.warn("Payment row insert failed (non-fatal):", pErr.message);
-  }
-
-  return NextResponse.json({ data }, { status: 201 });
 }

@@ -1,3 +1,4 @@
+///Users/apple/Documents/justmateng1/app/(main)/admin/(protected)/cargo/invoice/[id]/page.tsx
 "use client";
 import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
