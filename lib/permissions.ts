@@ -17,6 +17,8 @@ export const SECTION_KEYS = [
   "edufest",
   "event_banners",
   "events_list",
+  "docket",
+  "docket_list",
 ] as const;
 
 export type SectionKey = (typeof SECTION_KEYS)[number];
@@ -27,6 +29,8 @@ export const SECTION_LABELS: Record<SectionKey, string> = {
   edufest: "Edufest",
   event_banners: "Event Banners",
   events_list: "Events List",
+  docket: "Docket",
+  docket_list: "Docket List",
 };
 
 export function isSectionKey(value: string): value is SectionKey {

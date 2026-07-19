@@ -8,6 +8,8 @@ import {
   CalendarDays,
   Users,
   ShieldCheck,
+  FileText,
+  ListChecks,
 } from "lucide-react";
 import { getAdminSession } from "@/lib/auth/session";
 import { getStaffAllowedSections } from "@/lib/auth/staffAuth";
@@ -36,6 +38,20 @@ const SECTIONS: {
     description: "Bookings, statuses, invoices",
     icon: Truck,
     sectionKey: "cargo",
+  },
+  {
+    href: "/admin/docket",
+    label: "Docket",
+    description: "Create and manage individual dockets",
+    icon: FileText,
+    sectionKey: "docket",
+  },
+  {
+    href: "/admin/docket-list",
+    label: "Docket List",
+    description: "View all dockets",
+    icon: ListChecks,
+    sectionKey: "docket_list",
   },
   {
     href: "/admin/businesses_verify",

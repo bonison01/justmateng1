@@ -1,13 +1,27 @@
 // app/api/admin/cargo/docket/item/[itemId]/invoice/route.ts
+//
+// Called from within the Docket List page's item quick-view modal, so
+// gated on "docket_list" — same reasoning as the [id] PATCH route.
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { requireAdmin } from "@/lib/auth/requireAdmin";
+import { requireStaffSection } from "@/lib/auth/staffAuth";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
+
+async function requireAccess(req: NextRequest) {
+  const adminAuth = await requireAdmin(req);
+  if (!("error" in adminAuth)) return null;
+
+  const staffResult = await requireStaffSection("docket_list");
+  if (staffResult.ok) return null;
+
+  return adminAuth.error;
+}
 
 // ---------------------------------------------------------------------------
 // Request payload — sender/receiver are collected fresh at invoice time
@@ -79,8 +93,8 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ itemId: string }> }
 ) {
-  const auth = await requireAdmin(req);
-  if ("error" in auth) return auth.error;
+  const authError = await requireAccess(req);
+  if (authError) return authError;
 
   const { itemId } = await params;
   if (!itemId) {

@@ -1,18 +1,40 @@
 // app/api/admin/cargo/customers/route.ts
+//
+// This endpoint is shared: it's used by the docket-list page's invoice
+// modal (frequent-customer picker), and very likely also by the main
+// cargo booking page. Rather than pick one section, it accepts a staff
+// member with EITHER "cargo" or "docket_list" — whichever page they got
+// here from. If that's too permissive for your intent, narrow it to a
+// single section by removing one of the two requireStaffSection calls.
+
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { requireAdmin } from "@/lib/auth/requireAdmin";
+import { requireStaffSection } from "@/lib/auth/staffAuth";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+async function requireAccess(req: NextRequest) {
+  const adminAuth = await requireAdmin(req);
+  if (!("error" in adminAuth)) return null;
+
+  const cargoResult = await requireStaffSection("cargo");
+  if (cargoResult.ok) return null;
+
+  const docketListResult = await requireStaffSection("docket_list");
+  if (docketListResult.ok) return null;
+
+  return adminAuth.error;
+}
+
 // GET: list all customers, enriched with booking/payment stats
 // (the aggregation logic that used to live in the page's load() fn).
 export async function GET(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if ("error" in auth) return auth.error;
+  const authError = await requireAccess(req);
+  if (authError) return authError;
 
   const { data: cData, error: cErr } = await supabaseAdmin
     .from("cargo_customers")
@@ -64,8 +86,8 @@ export async function GET(req: NextRequest) {
 
 // POST: create a new frequent customer.
 export async function POST(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if ("error" in auth) return auth.error;
+  const authError = await requireAccess(req);
+  if (authError) return authError;
 
   const body = await req.json();
   const { name, phone, address, city_state, pincode } = body;

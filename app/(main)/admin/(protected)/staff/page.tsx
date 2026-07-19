@@ -1,7 +1,7 @@
 // app/(main)/admin/(protected)/staff/page.tsx
 'use client';
 
-import { useEffect, useState, useCallback, Fragment } from 'react';
+import { useEffect, useState, useCallback, useMemo, Fragment } from 'react';
 import Link from 'next/link';
 import { SECTION_KEYS, SECTION_LABELS, type SectionKey } from '@/lib/permissions';
 
@@ -17,7 +17,9 @@ interface StaffMember {
   name: string;
   email_or_phone: string;
   status: 'active' | 'disabled';
-  staff_roles: { id: string; name: string } | null;
+  // Changed from a single `staff_roles` object to an array — a staff
+  // member can now hold multiple roles at once.
+  roles: { id: string; name: string }[];
 }
 
 const cardStyle: React.CSSProperties = {
@@ -62,6 +64,15 @@ const secondaryButtonStyle: React.CSSProperties = {
   border: '1px solid #e5e7eb',
 };
 
+const chipStyle: React.CSSProperties = {
+  fontSize: 11,
+  padding: '3px 9px',
+  borderRadius: 999,
+  background: '#eff6ff',
+  color: '#1d4ed8',
+  fontWeight: 600,
+};
+
 export default function StaffAdminPage() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [staff, setStaff] = useState<StaffMember[]>([]);
@@ -79,34 +90,27 @@ export default function StaffAdminPage() {
   const [editingSections, setEditingSections] = useState<Set<SectionKey>>(new Set());
   const [savingRole, setSavingRole] = useState(false);
 
-  // New staff form
+  // New staff form — role is now a multi-select
   const [newStaffName, setNewStaffName] = useState('');
   const [newStaffContact, setNewStaffContact] = useState('');
   const [newStaffPassword, setNewStaffPassword] = useState('');
-  const [newStaffRoleId, setNewStaffRoleId] = useState('');
+  const [newStaffRoleIds, setNewStaffRoleIds] = useState<Set<string>>(new Set());
   const [creatingStaff, setCreatingStaff] = useState(false);
 
-  // Role reassignment per staff row is a two-step confirm: selecting a
-  // new role in the dropdown doesn't save anything by itself — it just
-  // stages the change here (keyed by staff id) so the sections that
-  // role grants can be shown before it's applied. Nothing is written
-  // until the admin clicks Confirm.
-  const [pendingRoleChange, setPendingRoleChange] = useState<Record<string, string>>({});
-  const [confirmingRoleChange, setConfirmingRoleChange] = useState<string | null>(null);
+  // Multi-role manager per staff row — same "stage, then confirm" idea
+  // as before, just staging a *set* of role ids instead of one. Opening
+  // the manager doesn't change anything by itself; only "Save roles"
+  // calls the API.
+  const [manageRolesStaffId, setManageRolesStaffId] = useState<string | null>(null);
+  const [stagedRoleIds, setStagedRoleIds] = useState<Set<string>>(new Set());
+  const [savingRoles, setSavingRoles] = useState(false);
 
-  // Password reset per staff row — same idea as the role change: opening
-  // it doesn't do anything by itself, typing a password and clicking
-  // Set password is what actually calls the API.
+  // Password reset per staff row
   const [passwordChangeStaffId, setPasswordChangeStaffId] = useState<string | null>(null);
   const [newStaffPasswordValue, setNewStaffPasswordValue] = useState('');
   const [passwordChangeError, setPasswordChangeError] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
 
-  // A floating confirmation, separate from the `message` banner up at
-  // the top of the page — that banner can be scrolled out of view by
-  // the time a password is set on a row further down the staff table,
-  // so this renders fixed to the viewport instead and is guaranteed
-  // visible regardless of scroll position.
   const [passwordToast, setPasswordToast] = useState<string | null>(null);
 
   const showMessage = (text: string, kind: 'error' | 'success') => {
@@ -144,11 +148,13 @@ export default function StaffAdminPage() {
     setFn(next);
   };
 
-  // Wraps fetch + res.json() so a bad response (empty body, non-JSON,
-  // network failure) never throws an unhandled exception that silently
-  // kills a click handler. Every handler below goes through this, so a
-  // failure always ends up in the error banner via showMessage instead
-  // of vanishing into the console.
+  const toggleInStringSet = (set: Set<string>, setFn: (s: Set<string>) => void, value: string) => {
+    const next = new Set(set);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    setFn(next);
+  };
+
   const safeFetchJson = async (
     input: string,
     init?: RequestInit
@@ -159,13 +165,10 @@ export default function StaffAdminPage() {
       try {
         data = await res.json();
       } catch {
-        // Response had no valid JSON body — happens if the server threw
-        // before returning a response at all.
         data = { message: 'Server returned an unexpected response.' };
       }
       return { ok: res.ok, data };
     } catch {
-      // fetch itself failed — offline, network error, etc.
       return { ok: false, data: { message: 'Could not reach the server. Check your connection.' } };
     }
   };
@@ -224,7 +227,7 @@ export default function StaffAdminPage() {
   };
 
   const handleDeleteRole = async (roleId: string, roleName: string) => {
-    if (!confirm(`Delete role "${roleName}"? Staff assigned to it will lose access until reassigned.`)) return;
+    if (!confirm(`Delete role "${roleName}"? Staff assigned to it will lose the access it grants (any other roles they hold are unaffected).`)) return;
     const { ok, data } = await safeFetchJson(`/api/admin/staff-roles/${roleId}`, { method: 'DELETE' });
     if (!ok) {
       showMessage(data.message || 'Failed to delete role.', 'error');
@@ -246,7 +249,7 @@ export default function StaffAdminPage() {
           name: newStaffName,
           emailOrPhone: newStaffContact,
           password: newStaffPassword,
-          roleId: newStaffRoleId || null,
+          roleIds: Array.from(newStaffRoleIds),
         }),
       });
       if (!ok) {
@@ -256,7 +259,7 @@ export default function StaffAdminPage() {
       setNewStaffName('');
       setNewStaffContact('');
       setNewStaffPassword('');
-      setNewStaffRoleId('');
+      setNewStaffRoleIds(new Set());
       showMessage('Staff account created.', 'success');
       loadData();
     } finally {
@@ -264,53 +267,48 @@ export default function StaffAdminPage() {
     }
   };
 
-  // Stage a role selection — doesn't call the API yet. The row will
-  // render a confirm panel showing what that role grants access to.
-  const handleStageRoleChange = (staffId: string, currentRoleId: string, selectedRoleId: string) => {
-    if (selectedRoleId === currentRoleId) {
-      // Selecting the role they already have — nothing to confirm.
-      setPendingRoleChange(prev => {
-        const next = { ...prev };
-        delete next[staffId];
-        return next;
-      });
-      return;
-    }
-    setPendingRoleChange(prev => ({ ...prev, [staffId]: selectedRoleId }));
+  // ---- multi-role manager ----
+
+  const openRoleManager = (member: StaffMember) => {
+    setManageRolesStaffId(member.id);
+    setStagedRoleIds(new Set(member.roles.map(r => r.id)));
   };
 
-  const handleCancelRoleChange = (staffId: string) => {
-    setPendingRoleChange(prev => {
-      const next = { ...prev };
-      delete next[staffId];
-      return next;
-    });
+  const cancelRoleManager = () => {
+    setManageRolesStaffId(null);
+    setStagedRoleIds(new Set());
   };
 
-  const handleConfirmRoleChange = async (staffId: string) => {
-    const roleId = pendingRoleChange[staffId] ?? '';
-    setConfirmingRoleChange(staffId);
+  const handleSaveRoles = async (staffId: string) => {
+    setSavingRoles(true);
     try {
       const { ok, data } = await safeFetchJson(`/api/admin/staff/${staffId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roleId: roleId || null }),
+        body: JSON.stringify({ roleIds: Array.from(stagedRoleIds) }),
       });
       if (!ok) {
-        showMessage(data.message || 'Failed to update role.', 'error');
+        showMessage(data.message || 'Failed to update roles.', 'error');
         return;
       }
-      showMessage('Role updated.', 'success');
-      setPendingRoleChange(prev => {
-        const next = { ...prev };
-        delete next[staffId];
-        return next;
-      });
+      showMessage('Roles updated.', 'success');
+      cancelRoleManager();
       loadData();
     } finally {
-      setConfirmingRoleChange(null);
+      setSavingRoles(false);
     }
   };
+
+  // Union of sections granted by the currently-staged role selection —
+  // shown live so an admin can see combined access before saving.
+  const stagedSections = useMemo(() => {
+    const set = new Set<string>();
+    for (const roleId of stagedRoleIds) {
+      const role = roles.find(r => r.id === roleId);
+      role?.sections.forEach(s => set.add(s));
+    }
+    return Array.from(set);
+  }, [stagedRoleIds, roles]);
 
   const handleOpenPasswordChange = (staffId: string) => {
     setPasswordChangeStaffId(staffId);
@@ -387,7 +385,8 @@ export default function StaffAdminPage() {
         <div>
           <h1 style={{ fontSize: 18, fontWeight: 700, color: '#111827', margin: 0 }}>Staff &amp; Roles</h1>
           <p style={{ fontSize: 13, color: '#6b7280', marginTop: 4 }}>
-            Create roles that bundle access to sections, then assign staff accounts to them.
+            Create roles that bundle access to sections, then assign one or more roles to each staff account —
+            their access is the combination of everything those roles grant.
           </p>
         </div>
         <Link
@@ -578,7 +577,7 @@ export default function StaffAdminPage() {
               <tr style={{ background: '#f9fafb', textAlign: 'left' }}>
                 <th style={{ padding: '10px 16px', fontWeight: 600, color: '#374151' }}>Name</th>
                 <th style={{ padding: '10px 16px', fontWeight: 600, color: '#374151' }}>Email / Phone</th>
-                <th style={{ padding: '10px 16px', fontWeight: 600, color: '#374151' }}>Role</th>
+                <th style={{ padding: '10px 16px', fontWeight: 600, color: '#374151' }}>Roles</th>
                 <th style={{ padding: '10px 16px', fontWeight: 600, color: '#374151' }}>Status</th>
                 <th style={{ padding: '10px 16px', fontWeight: 600, color: '#374151' }}></th>
               </tr>
@@ -592,11 +591,7 @@ export default function StaffAdminPage() {
                 </tr>
               )}
               {staff.map(member => {
-                const currentRoleId = member.staff_roles?.id ?? '';
-                const pendingRoleId = pendingRoleChange[member.id];
-                const hasPendingChange = pendingRoleId !== undefined;
-                const pendingRole = hasPendingChange ? roles.find(r => r.id === pendingRoleId) : undefined;
-                const isConfirming = confirmingRoleChange === member.id;
+                const isManaging = manageRolesStaffId === member.id;
 
                 return (
                   <Fragment key={member.id}>
@@ -604,18 +599,30 @@ export default function StaffAdminPage() {
                       <td style={{ padding: '10px 16px', color: '#111827' }}>{member.name}</td>
                       <td style={{ padding: '10px 16px', color: '#6b7280' }}>{member.email_or_phone}</td>
                       <td style={{ padding: '10px 16px' }}>
-                        <select
-                          value={hasPendingChange ? pendingRoleId : currentRoleId}
-                          onChange={e => handleStageRoleChange(member.id, currentRoleId, e.target.value)}
-                          style={{ ...inputStyle, padding: '6px 8px', width: 'auto' }}
-                        >
-                          <option value="">No role</option>
-                          {roles.map(r => (
-                            <option key={r.id} value={r.id}>
-                              {r.name}
-                            </option>
-                          ))}
-                        </select>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                          {member.roles.length === 0 ? (
+                            <span style={{ fontSize: 11.5, color: '#9ca3af' }}>No roles</span>
+                          ) : (
+                            member.roles.map(r => (
+                              <span key={r.id} style={chipStyle}>{r.name}</span>
+                            ))
+                          )}
+                          <button
+                            onClick={() => (isManaging ? cancelRoleManager() : openRoleManager(member))}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: '#111827',
+                              fontSize: 11.5,
+                              fontWeight: 600,
+                              textDecoration: 'underline',
+                              cursor: 'pointer',
+                              padding: 0,
+                            }}
+                          >
+                            {isManaging ? 'Close' : 'Manage roles'}
+                          </button>
+                        </div>
                       </td>
                       <td style={{ padding: '10px 16px' }}>
                         <button
@@ -654,6 +661,108 @@ export default function StaffAdminPage() {
                         </button>
                       </td>
                     </tr>
+
+                    {isManaging && (
+                      <tr key={`${member.id}-roles`} style={{ borderTop: '1px solid #f3f4f6' }}>
+                        <td colSpan={5} style={{ padding: '0 16px 14px' }}>
+                          <div
+                            style={{
+                              background: '#f9fafb',
+                              border: '1px solid #e5e7eb',
+                              borderRadius: 10,
+                              padding: '14px',
+                            }}
+                          >
+                            <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 8 }}>
+                              Roles for {member.name}
+                            </div>
+                            <div
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
+                                gap: 8,
+                                marginBottom: 12,
+                              }}
+                            >
+                              {roles.length === 0 ? (
+                                <span style={{ fontSize: 11.5, color: '#9ca3af' }}>
+                                  No roles exist yet — create one above first.
+                                </span>
+                              ) : (
+                                roles.map(r => (
+                                  <label
+                                    key={r.id}
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: 8,
+                                      fontSize: 12,
+                                      color: '#111827',
+                                      padding: '6px 10px',
+                                      borderRadius: 8,
+                                      background: stagedRoleIds.has(r.id) ? '#eff6ff' : '#fff',
+                                      border: '1px solid #e5e7eb',
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={stagedRoleIds.has(r.id)}
+                                      onChange={() => toggleInStringSet(stagedRoleIds, setStagedRoleIds, r.id)}
+                                    />
+                                    {r.name}
+                                  </label>
+                                ))
+                              )}
+                            </div>
+
+                            <div style={{ fontSize: 11.5, color: '#374151', marginBottom: 6 }}>
+                              Combined access from selected roles:
+                            </div>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+                              {stagedSections.length === 0 ? (
+                                <span style={{ fontSize: 11.5, color: '#9ca3af' }}>
+                                  No sections — this staff member won't be able to access anything.
+                                </span>
+                              ) : (
+                                stagedSections.map(section => (
+                                  <span
+                                    key={section}
+                                    style={{
+                                      fontSize: 11,
+                                      padding: '3px 9px',
+                                      borderRadius: 999,
+                                      background: '#ecfdf5',
+                                      color: '#065f46',
+                                      fontWeight: 600,
+                                    }}
+                                  >
+                                    {SECTION_LABELS[section as SectionKey] ?? section}
+                                  </span>
+                                ))
+                              )}
+                            </div>
+
+                            <div style={{ display: 'flex', gap: 8 }}>
+                              <button
+                                onClick={() => handleSaveRoles(member.id)}
+                                disabled={savingRoles}
+                                style={{ ...buttonStyle, padding: '7px 14px', fontSize: 12 }}
+                              >
+                                {savingRoles ? 'Saving…' : 'Save roles'}
+                              </button>
+                              <button
+                                onClick={cancelRoleManager}
+                                disabled={savingRoles}
+                                style={{ ...secondaryButtonStyle, padding: '7px 14px', fontSize: 12 }}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
 
                     {passwordChangeStaffId === member.id && (
                       <tr key={`${member.id}-password`} style={{ borderTop: '1px solid #f3f4f6' }}>
@@ -706,79 +815,6 @@ export default function StaffAdminPage() {
                         </td>
                       </tr>
                     )}
-
-                    {hasPendingChange && (
-                      <tr key={`${member.id}-confirm`} style={{ borderTop: '1px solid #f3f4f6' }}>
-                        <td colSpan={5} style={{ padding: '0 16px 14px' }}>
-                          <div
-                            style={{
-                              background: '#f9fafb',
-                              border: '1px solid #e5e7eb',
-                              borderRadius: 10,
-                              padding: '12px 14px',
-                            }}
-                          >
-                            <div style={{ fontSize: 12, color: '#374151', marginBottom: 8 }}>
-                              {pendingRoleId ? (
-                                <>
-                                  Change <strong>{member.name}</strong>'s role to{' '}
-                                  <strong>{pendingRole?.name ?? 'this role'}</strong>. They will be able to access:
-                                </>
-                              ) : (
-                                <>
-                                  Remove <strong>{member.name}</strong>'s role. They will lose access to every
-                                  admin section.
-                                </>
-                              )}
-                            </div>
-
-                            {pendingRoleId && (
-                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
-                                {pendingRole && pendingRole.sections.length > 0 ? (
-                                  pendingRole.sections.map(section => (
-                                    <span
-                                      key={section}
-                                      style={{
-                                        fontSize: 11,
-                                        padding: '3px 9px',
-                                        borderRadius: 999,
-                                        background: '#ecfdf5',
-                                        color: '#065f46',
-                                        fontWeight: 600,
-                                      }}
-                                    >
-                                      {SECTION_LABELS[section as SectionKey] ?? section}
-                                    </span>
-                                  ))
-                                ) : (
-                                  <span style={{ fontSize: 11.5, color: '#9ca3af' }}>
-                                    This role has no sections enabled — they won't be able to access anything
-                                    until you add some under Roles above.
-                                  </span>
-                                )}
-                              </div>
-                            )}
-
-                            <div style={{ display: 'flex', gap: 8 }}>
-                              <button
-                                onClick={() => handleConfirmRoleChange(member.id)}
-                                disabled={isConfirming}
-                                style={{ ...buttonStyle, padding: '7px 14px', fontSize: 12 }}
-                              >
-                                {isConfirming ? 'Saving…' : 'Confirm'}
-                              </button>
-                              <button
-                                onClick={() => handleCancelRoleChange(member.id)}
-                                disabled={isConfirming}
-                                style={{ ...secondaryButtonStyle, padding: '7px 14px', fontSize: 12 }}
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
                   </Fragment>
                 );
               })}
@@ -805,33 +841,56 @@ export default function StaffAdminPage() {
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-            <div>
-              <label style={labelStyle}>Temporary password</label>
-              <input
-                type="password"
-                style={inputStyle}
-                value={newStaffPassword}
-                onChange={e => setNewStaffPassword(e.target.value)}
-                minLength={8}
-                required
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>Role</label>
-              <select
-                style={inputStyle}
-                value={newStaffRoleId}
-                onChange={e => setNewStaffRoleId(e.target.value)}
-              >
-                <option value="">No role (no section access)</option>
-                {roles.map(r => (
-                  <option key={r.id} value={r.id}>
-                    {r.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div style={{ marginBottom: 16 }}>
+            <label style={labelStyle}>Temporary password</label>
+            <input
+              type="password"
+              style={{ ...inputStyle, maxWidth: 320 }}
+              value={newStaffPassword}
+              onChange={e => setNewStaffPassword(e.target.value)}
+              minLength={8}
+              required
+            />
+          </div>
+
+          <label style={labelStyle}>Roles (a staff member can hold more than one)</label>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
+              gap: 8,
+              marginBottom: 16,
+            }}
+          >
+            {roles.length === 0 ? (
+              <span style={{ fontSize: 11.5, color: '#9ca3af' }}>
+                No roles exist yet — create one above first, or leave this staff member with no access for now.
+              </span>
+            ) : (
+              roles.map(r => (
+                <label
+                  key={r.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    fontSize: 12,
+                    color: '#111827',
+                    padding: '6px 10px',
+                    borderRadius: 8,
+                    background: newStaffRoleIds.has(r.id) ? '#eff6ff' : '#f9fafb',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={newStaffRoleIds.has(r.id)}
+                    onChange={() => toggleInStringSet(newStaffRoleIds, setNewStaffRoleIds, r.id)}
+                  />
+                  {r.name}
+                </label>
+              ))
+            )}
           </div>
 
           <button type="submit" style={buttonStyle} disabled={creatingStaff}>

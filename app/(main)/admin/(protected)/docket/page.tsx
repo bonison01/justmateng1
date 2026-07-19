@@ -1,4 +1,4 @@
-// app/(main)/admin/cargo/docket/page.tsx
+// app/(main)/admin/docket/page.tsx
 "use client";
 
 import React, { useMemo, useState } from "react";
@@ -325,7 +325,7 @@ function SuccessModal({
   onDashboard: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40">
       <div className="w-full max-w-sm rounded-xl border border-neutral-200 bg-white p-6 shadow-xl">
         <div className="mb-4 flex flex-col items-center text-center">
           <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-blue-100">
@@ -499,7 +499,7 @@ export default function NewDocketPage() {
         })),
       };
 
-      const res = await fetch("/api/admin/cargo/docket", {
+      const res = await fetch("/api/admin/docket", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -538,15 +538,26 @@ export default function NewDocketPage() {
             </h1>
             <p className="text-xs text-neutral-500 sm:text-sm">Record bags and the items packed inside each</p>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => router.push("/admin/cargo")}
-            className="border-emerald-200 bg-white text-xs text-emerald-700 hover:bg-emerald-50 sm:text-sm"
-          >
-            <List className="mr-1.5 h-4 w-4" />
-            View bookings
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => router.push("/admin/cargo")}
+              className="border-emerald-200 bg-white text-xs text-emerald-700 hover:bg-emerald-50 sm:text-sm"
+            >
+              <List className="mr-1.5 h-4 w-4" />
+              View bookings
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => router.push("/admin/docket-list")}
+              className="border-blue-200 bg-white text-xs text-blue-700 hover:bg-blue-50 sm:text-sm"
+            >
+              <Package className="mr-1.5 h-4 w-4" />
+              Docket list
+            </Button>
+          </div>
         </div>
 
         <div className="space-y-4 sm:space-y-5">
@@ -638,7 +649,7 @@ export default function NewDocketPage() {
 
       {/* Sticky mobile action bar — keeps the running total and save button
           reachable without scrolling back down through every bag/item */}
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-neutral-200 bg-white/95 px-3 py-3 backdrop-blur sm:hidden">
+      <div className="fixed inset-x-0 bottom-0 z-[90] border-t border-neutral-200 bg-white/95 px-3 py-3 backdrop-blur sm:hidden">
         <div className="mb-2 flex items-center justify-between text-xs text-neutral-500">
           <span>{bags.length} bag{bags.length !== 1 ? "s" : ""} · {totalItems} item{totalItems !== 1 ? "s" : ""} · {grandWeight.toFixed(2)} kg</span>
           <span className="text-sm font-semibold text-neutral-900">₹{grandTotal.toFixed(2)}</span>

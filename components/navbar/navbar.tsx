@@ -72,7 +72,7 @@ function Navbar() {
     };
 
     const links: NavLink[] = [
-        { name: "Discover Businesses", href: "/businesses" },
+        { name: "Discover Businesses", href: "https://www.instagram.com/mateng.discovery/" },
         { name: "Delivery Service", href: "https://matengdelivery.com/" },
         { name: "Events", href: "/events" },
     ];

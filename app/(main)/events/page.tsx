@@ -13,16 +13,16 @@
  *   alter table events add column if not exists image_url text;
  *
  * ── VISUAL LANGUAGE ──────────────────────────────────────────────────
- * This page is restyled to match the Mateng homepage exactly: Fraunces
- * for display type, Inter for body, JetBrains Mono for "eyebrow"
- * labels, a dark #0B1410 canvas, green (#3FA637) + gold (#E8B84B)
- * accents, dashed-border cards, ticket-stub motifs, and the same
- * pop-in / ring-pulse / route-line animation vocabulary.
+ * Typography (Fraunces / Inter / JetBrains Mono) and the ticket-banner
+ * carousel motif still match the Mateng homepage. The page canvas
+ * itself is white/light rather than the homepage's dark theme — the
+ * hero carousel intentionally stays a dark "poster" card, the same way
+ * a photo card reads fine floating on either a light or dark page.
  * ─────────────────────────────────────────────────────────────────────
  */
 
 import { motion, AnimatePresence } from "framer-motion";
-import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
 import { Fraunces, Inter, JetBrains_Mono } from "next/font/google";
@@ -42,17 +42,19 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// ── PALETTE (matches homepage exactly) ────────────────────────────────
-const BG = "#0B1410";
-const TEXT = "#F3F1EA";
-const MUTED = "#92A395";
-const MUTED2 = "#8FA391";
+// ── PALETTE — light theme, same brand hues as the homepage ───────────
+const BG = "#FFFFFF";
+const TEXT = "#0B1410";
+const MUTED = "#5B6B5D";
+const MUTED2 = "#7C8C7E";
 const GREEN = "#3FA637";
+const GREEN_DARK = "#0F550C";
 const GOLD = "#E8B84B";
+const GOLD_TEXT = "#B8860B";
 const GREEN2 = "#50C273";
-const CARD_BG = "rgba(243,241,234,0.03)";
-const CARD_BORDER = "rgba(243,241,234,0.16)";
-const MODAL_BG = "#101B15";
+const CARD_BG = "#F6F7F4";
+const CARD_BORDER = "#E1E5DE";
+const MODAL_BG = "#FFFFFF";
 
 export type CategoryId =
   | "all" | "education" | "concerts" | "business"
@@ -85,39 +87,39 @@ export interface DBEvent {
 
 type HeroSlide = Banner & { event?: DBEvent };
 
-// Dark-mode-tuned accents, brand-consistent with the homepage's green/gold/purple palette.
+// Deep, saturated accents — good contrast on a white page.
 export const CATEGORIES: { id: CategoryId; label: string; icon: string; accent: string }[] = [
-  { id: "all", label: "All Events", icon: "◈", accent: MUTED2 },
-  { id: "education", label: "Education", icon: "◎", accent: GOLD },
-  { id: "concerts", label: "Concerts", icon: "♪", accent: "#c084fc" },
-  { id: "business", label: "Business", icon: "◇", accent: "#60a5fa" },
-  { id: "medical", label: "Medical", icon: "✦", accent: "#f87171" },
-  { id: "sports", label: "Sports", icon: "◉", accent: "#fb923c" },
-  { id: "cultural", label: "Cultural", icon: "❋", accent: "#22d3ee" },
-  { id: "workshops", label: "Workshops", icon: "⬡", accent: "#fbbf24" },
-  { id: "exhibitions", label: "Exhibitions", icon: "▣", accent: "#a78bfa" },
+  { id: "all", label: "All Events", icon: "◈", accent: "#374151" },
+  { id: "education", label: "Education", icon: "◎", accent: "#14710f" },
+  { id: "concerts", label: "Concerts", icon: "♪", accent: "#7c3d94" },
+  { id: "business", label: "Business", icon: "◇", accent: "#1a56a8" },
+  { id: "medical", label: "Medical", icon: "✦", accent: "#b91c1c" },
+  { id: "sports", label: "Sports", icon: "◉", accent: "#b45309" },
+  { id: "cultural", label: "Cultural", icon: "❋", accent: "#0e7490" },
+  { id: "workshops", label: "Workshops", icon: "⬡", accent: "#c2410c" },
+  { id: "exhibitions", label: "Exhibitions", icon: "▣", accent: "#4338ca" },
 ];
 
 function statusConfig(s: EventStatus) {
   return ({
-    upcoming: { label: "Upcoming", color: "#93c5fd", bg: "rgba(96,165,250,0.14)" },
-    open: { label: "Open Now", color: GREEN2, bg: "rgba(80,194,115,0.16)" },
-    ongoing: { label: "Live Now", color: "#fca5a5", bg: "rgba(248,113,113,0.14)" },
-    past: { label: "Past", color: MUTED, bg: "rgba(243,241,234,0.05)" },
-    postponed: { label: "Postponed", color: GOLD, bg: "rgba(232,184,75,0.14)" },
-    cancelled: { label: "Cancelled", color: MUTED, bg: "rgba(243,241,234,0.05)" },
-  } as any)[s] ?? { label: s, color: MUTED, bg: "rgba(243,241,234,0.05)" };
+    upcoming: { label: "Upcoming", color: "#1a56a8", bg: "#eff6ff" },
+    open: { label: "Open Now", color: "#14710f", bg: "#f0fdf4" },
+    ongoing: { label: "Live Now", color: "#b91c1c", bg: "#fef2f2" },
+    past: { label: "Past", color: "#6b7280", bg: "#f9fafb" },
+    postponed: { label: "Postponed", color: "#92400e", bg: "#fffbeb" },
+    cancelled: { label: "Cancelled", color: "#6b7280", bg: "#f3f4f6" },
+  } as any)[s] ?? { label: s, color: "#6b7280", bg: "#f9fafb" };
 }
 function timeAgo(d: string) { const diff = new Date(d).getTime() - Date.now(); const days = Math.round(Math.abs(diff) / 86400000); if (diff > 0) return `in ${days}d`; if (days === 0) return "today"; return `${days}d ago`; }
 function lineupLabel(items: LineupItem[]) { if (!items?.length) return ""; const r = items.map(i => i.role); if (r.includes("artist") || r.includes("performer")) return "Artists"; if (r.includes("speaker")) return "Speakers"; if (r.includes("athlete")) return "Athletes"; if (r.includes("exhibitor")) return "Exhibitors"; return "Participants"; }
 
 function AvatarCircle({ initials, color, size = 36 }: { initials: string; color: string; size?: number }) {
-  return <div style={{ width: size, height: size, borderRadius: "50%", background: color + "22", border: `1.5px solid ${color}55`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: Math.round(size * 0.33), fontWeight: 700, color, flexShrink: 0 }}>{initials || "?"}</div>;
+  return <div style={{ width: size, height: size, borderRadius: "50%", background: color + "18", border: `1.5px solid ${color}44`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: Math.round(size * 0.33), fontWeight: 700, color, flexShrink: 0 }}>{initials || "?"}</div>;
 }
 function StatusPill({ status }: { status: EventStatus }) {
   const cfg = statusConfig(status);
   return (
-    <span className="eyebrow" style={{ padding: "3px 10px", borderRadius: 999, background: cfg.bg, color: cfg.color, fontSize: 10, fontWeight: 600, border: `1px solid ${cfg.color}33`, display: "inline-flex", alignItems: "center", gap: 5, letterSpacing: "0.08em" }}>
+    <span className="eyebrow" style={{ padding: "3px 10px", borderRadius: 999, background: cfg.bg, color: cfg.color, fontSize: 10, fontWeight: 700, border: `1px solid ${cfg.color}22`, display: "inline-flex", alignItems: "center", gap: 5, letterSpacing: "0.07em" }}>
       {status === "open" && <span className="live-dot" style={{ width: 5, height: 5, borderRadius: "50%", background: cfg.color, display: "inline-block" }} />}
       {cfg.label}
     </span>
@@ -125,14 +127,14 @@ function StatusPill({ status }: { status: EventStatus }) {
 }
 function CategoryChip({ cat }: { cat: { label: string; icon: string; accent: string } }) {
   return (
-    <span className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 10px", borderRadius: 999, background: cat.accent + "1f", border: `1px solid ${cat.accent}44`, color: TEXT, fontSize: 10, letterSpacing: "0.08em" }}>
+    <span className="eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 10px", borderRadius: 999, background: "rgba(255,255,255,0.94)", border: `1px solid ${cat.accent}40`, color: cat.accent, fontSize: 10, letterSpacing: "0.07em" }}>
       <span style={{ width: 6, height: 6, borderRadius: "50%", background: cat.accent, flexShrink: 0 }} />
       {cat.icon} {cat.label}
     </span>
   );
 }
 
-// ── HERO CAROUSEL — styled as a "ticket banner" like the homepage's EduFest/G15 cards ──
+// ── HERO CAROUSEL — a dark "ticket banner" poster, same motif as the homepage's EduFest/G15 cards ──
 function HeroCarousel({ slides, onEventOpen }: { slides: HeroSlide[]; onEventOpen: (e: DBEvent) => void }) {
   const [idx, setIdx] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -174,7 +176,7 @@ function HeroCarousel({ slides, onEventOpen }: { slides: HeroSlide[]; onEventOpe
               {cur.event ? (
                 <>
                   {cur.event.status === "open" && <span className="live-dot" style={{ width: 6, height: 6, borderRadius: "50%", background: GREEN2, display: "inline-block" }} />}
-                  <span className="eyebrow" style={{ fontSize: 11, color: TEXT, padding: "6px 12px", borderRadius: 999, background: "rgba(0,0,0,0.4)" }}>
+                  <span className="eyebrow" style={{ fontSize: 11, color: "#F3F1EA", padding: "6px 12px", borderRadius: 999, background: "rgba(0,0,0,0.4)" }}>
                     {statusConfig(cur.event.status).label} · {cat?.icon} {cat?.label}
                   </span>
                 </>
@@ -187,13 +189,13 @@ function HeroCarousel({ slides, onEventOpen }: { slides: HeroSlide[]; onEventOpe
           {/* content + ticket stub */}
           <div style={{ display: "flex", flexDirection: "row" }}>
             <div style={{ flex: 1, padding: "clamp(22px,3vw,40px)", textAlign: "left" }}>
-              <h2 style={{ margin: "0 0 10px", fontFamily: "var(--font-display)", fontWeight: 600, fontSize: "clamp(22px,3.2vw,36px)", lineHeight: 1.15, color: TEXT }}>{cur.title}</h2>
+              <h2 style={{ margin: "0 0 10px", fontFamily: "var(--font-display)", fontWeight: 600, fontSize: "clamp(22px,3.2vw,36px)", lineHeight: 1.15, color: "#F3F1EA" }}>{cur.title}</h2>
               {cur.subtitle && <p style={{ margin: "0 0 22px", fontSize: 14, color: "#D7E4D8", maxWidth: 560, lineHeight: 1.6 }}>{cur.subtitle}</p>}
               <button onClick={go} style={{ padding: "12px 26px", borderRadius: 999, background: "#fff", color: idx % 2 === 0 ? "#0F550C" : "#2D1B69", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer" }}>
                 {cur.link_label || (cur.event ? "View Event" : "Learn More")} →
               </button>
             </div>
-            <div className="hero-stub" style={{ width: 96, flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, borderLeft: `1px dashed ${CARD_BORDER}` }}>
+            <div className="hero-stub" style={{ width: 96, flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, borderLeft: "1px dashed rgba(243,241,234,0.2)" }}>
               <span className="eyebrow" style={{ fontSize: 10, color: GOLD, writingMode: "vertical-rl" }}>Admit One</span>
               <span className="tabular" style={{ fontSize: 11, color: "#D7E4D8" }}>{cur.event ? cur.event.date_start.slice(5).replace("-", "·") : "★"}</span>
             </div>
@@ -203,13 +205,13 @@ function HeroCarousel({ slides, onEventOpen }: { slides: HeroSlide[]; onEventOpe
 
       {slides.length > 1 && (
         <div style={{ display: "flex", justifyContent: "center", gap: 7, marginTop: 16 }}>
-          {slides.map((_, i) => <button key={i} onClick={() => { setIdx(i); startTimer(); }} style={{ width: i === idx ? 24 : 7, height: 7, borderRadius: 999, background: i === idx ? GREEN2 : "rgba(243,241,234,0.25)", border: "none", cursor: "pointer", padding: 0, transition: "all 0.3s" }} />)}
+          {slides.map((_, i) => <button key={i} onClick={() => { setIdx(i); startTimer(); }} style={{ width: i === idx ? 24 : 7, height: 7, borderRadius: 999, background: i === idx ? GREEN_DARK : "#D1D5CD", border: "none", cursor: "pointer", padding: 0, transition: "all 0.3s" }} />)}
         </div>
       )}
       {slides.length > 1 && (
         <>
-          <button onClick={() => { setIdx((idx - 1 + slides.length) % slides.length); startTimer(); }} style={{ position: "absolute", left: 12, top: "38%", transform: "translateY(-50%)", background: "rgba(243,241,234,0.08)", border: `1px solid ${CARD_BORDER}`, color: TEXT, width: 38, height: 38, borderRadius: "50%", cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 5, backdropFilter: "blur(4px)" }}>‹</button>
-          <button onClick={() => { setIdx((idx + 1) % slides.length); startTimer(); }} style={{ position: "absolute", right: 12, top: "38%", transform: "translateY(-50%)", background: "rgba(243,241,234,0.08)", border: `1px solid ${CARD_BORDER}`, color: TEXT, width: 38, height: 38, borderRadius: "50%", cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 5, backdropFilter: "blur(4px)" }}>›</button>
+          <button onClick={() => { setIdx((idx - 1 + slides.length) % slides.length); startTimer(); }} style={{ position: "absolute", left: 12, top: "38%", transform: "translateY(-50%)", background: "rgba(0,0,0,0.35)", border: "1px solid rgba(243,241,234,0.2)", color: "#fff", width: 38, height: 38, borderRadius: "50%", cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 5, backdropFilter: "blur(4px)" }}>‹</button>
+          <button onClick={() => { setIdx((idx + 1) % slides.length); startTimer(); }} style={{ position: "absolute", right: 12, top: "38%", transform: "translateY(-50%)", background: "rgba(0,0,0,0.35)", border: "1px solid rgba(243,241,234,0.2)", color: "#fff", width: 38, height: 38, borderRadius: "50%", cursor: "pointer", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 5, backdropFilter: "blur(4px)" }}>›</button>
         </>
       )}
     </div>
@@ -226,13 +228,13 @@ function EventCard({ event, onSelect, delay = 0 }: { event: DBEvent; onSelect: (
       whileHover={{ y: -6 }} onClick={() => onSelect(event)}
       style={{
         all: "unset", cursor: "pointer", display: "flex", flexDirection: "column",
-        background: CARD_BG, border: `1px dashed ${CARD_BORDER}`, borderRadius: 18, overflow: "hidden", textAlign: "left",
+        background: "#fff", border: `1px solid ${CARD_BORDER}`, borderRadius: 18, overflow: "hidden", textAlign: "left",
         transition: "box-shadow 0.3s ease",
-        boxShadow: event.featured ? `0 0 0 1px ${cat.accent}33, 0 20px 50px -24px ${cat.accent}55` : "none",
+        boxShadow: event.featured ? `0 0 0 1px ${cat.accent}30, 0 20px 44px -26px ${cat.accent}44` : "0 1px 3px rgba(11,20,16,0.06)",
       }}>
       {event.image_url ? (
         <div style={{ position: "relative", height: 140, flexShrink: 0, backgroundImage: `url(${event.image_url})`, backgroundSize: "cover", backgroundPosition: "center" }}>
-          <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(11,20,16,0) 50%, rgba(11,20,16,0.75) 100%)" }} />
+          <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(11,20,16,0) 55%, rgba(11,20,16,0.45) 100%)" }} />
           <div style={{ position: "absolute", top: 10, left: 10 }}><CategoryChip cat={cat} /></div>
           <div style={{ position: "absolute", top: 10, right: 10 }}><StatusPill status={event.status} /></div>
           {event.featured && <span className="eyebrow" style={{ position: "absolute", bottom: 10, left: 10, fontSize: 9, color: GOLD }}>★ Featured</span>}
@@ -250,25 +252,25 @@ function EventCard({ event, onSelect, delay = 0 }: { event: DBEvent; onSelect: (
           {[["📅", event.date_start + (event.date_end ? ` – ${event.date_end}` : "")], ["📍", event.venue], ["🎟", event.fee_label]].map(([icon, val]) => (
             <div key={icon} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
               <span style={{ fontSize: 12, flexShrink: 0, opacity: 0.7 }}>{icon}</span>
-              <span className="tabular" style={{ fontSize: 12, color: "#C9D6CB", lineHeight: 1.5 }}>{val}</span>
+              <span className="tabular" style={{ fontSize: 12, color: "#33402F", lineHeight: 1.5 }}>{val}</span>
             </div>
           ))}
         </div>
         {lineup.length > 0 && (
           <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ display: "flex" }}>{lineup.slice(0, 5).map((item, i) => <div key={i} style={{ marginLeft: i === 0 ? 0 : -8, borderRadius: "50%", border: `2px solid ${BG}` }}><AvatarCircle initials={item.avatar_initials || item.name.slice(0, 2).toUpperCase()} color={item.avatar_color || cat.accent} size={26} /></div>)}</div>
+            <div style={{ display: "flex" }}>{lineup.slice(0, 5).map((item, i) => <div key={i} style={{ marginLeft: i === 0 ? 0 : -8, borderRadius: "50%", border: "2px solid #fff" }}><AvatarCircle initials={item.avatar_initials || item.name.slice(0, 2).toUpperCase()} color={item.avatar_color || cat.accent} size={26} /></div>)}</div>
             <span style={{ fontSize: 11, color: MUTED }}>{lineup.length} {lLabel}</span>
           </div>
         )}
         {(event.tags || []).length > 0 && (
           <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 5 }}>
             {(event.tags || []).slice(0, 3).map(t => (
-              <span key={t} className="eyebrow" style={{ padding: "3px 9px", borderRadius: 999, fontSize: 9, background: "rgba(243,241,234,0.06)", border: "1px solid rgba(243,241,234,0.14)", color: MUTED2 }}>{t}</span>
+              <span key={t} className="eyebrow" style={{ padding: "3px 9px", borderRadius: 999, fontSize: 9, background: CARD_BG, border: `1px solid ${CARD_BORDER}`, color: MUTED2 }}>{t}</span>
             ))}
           </div>
         )}
       </div>
-      <div style={{ marginTop: "auto", padding: "10px 18px", borderTop: `1px dashed ${CARD_BORDER}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ marginTop: "auto", padding: "10px 18px", borderTop: `1px solid ${CARD_BORDER}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span className="tabular" style={{ fontSize: 11, color: MUTED }}>{timeAgo(event.date_start)}</span>
         <span style={{ fontSize: 12, fontWeight: 700, color: cat.accent }}>
           {event.page_href ? "Learn More →" : "Details →"}
@@ -317,36 +319,36 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       onClick={e => e.target === e.currentTarget && onClose()}
-      style={{ position: "fixed", inset: 0, top: 80, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(3px)" }}
+      style={{ position: "fixed", inset: 0, top: 80, background: "rgba(11,20,16,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(3px)" }}
     >
       <motion.div
         initial={{ opacity: 0, y: 28, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 20 }} transition={{ duration: 0.22 }}
-        style={{ background: MODAL_BG, border: `1px solid ${CARD_BORDER}`, borderRadius: 24, width: "100%", maxWidth: 640, maxHeight: "calc(100vh - 100px)", overflowY: "auto", boxShadow: "0 40px 100px rgba(0,0,0,0.5)", display: "flex", flexDirection: "column" }}
+        style={{ background: MODAL_BG, border: `1px solid ${CARD_BORDER}`, borderRadius: 24, width: "100%", maxWidth: 640, maxHeight: "calc(100vh - 100px)", overflowY: "auto", boxShadow: "0 30px 80px rgba(11,20,16,0.25)", display: "flex", flexDirection: "column" }}
       >
         {event.image_url && (
           <div style={{ position: "relative", height: 200, flexShrink: 0, borderRadius: "24px 24px 0 0", backgroundImage: `url(${event.image_url})`, backgroundSize: "cover", backgroundPosition: "center" }}>
-            <div style={{ position: "absolute", inset: 0, borderRadius: "24px 24px 0 0", background: "linear-gradient(180deg, rgba(11,20,16,0.05) 40%, rgba(16,27,21,0.85) 100%)" }} />
-            <button onClick={onClose} style={{ position: "absolute", top: 16, right: 16, background: "rgba(0,0,0,0.4)", border: `1px solid ${CARD_BORDER}`, color: TEXT, borderRadius: "50%", width: 34, height: 34, cursor: "pointer", fontSize: 15 }}>✕</button>
+            <div style={{ position: "absolute", inset: 0, borderRadius: "24px 24px 0 0", background: "linear-gradient(180deg, rgba(11,20,16,0.05) 40%, rgba(11,20,16,0.55) 100%)" }} />
+            <button onClick={onClose} style={{ position: "absolute", top: 16, right: 16, background: "rgba(0,0,0,0.4)", border: "1px solid rgba(243,241,234,0.25)", color: "#fff", borderRadius: "50%", width: 34, height: 34, cursor: "pointer", fontSize: 15 }}>✕</button>
           </div>
         )}
 
-        <div style={{ padding: "22px 26px 0", position: "sticky", top: 0, background: MODAL_BG, zIndex: 10, borderRadius: event.image_url ? 0 : "24px 24px 0 0", borderBottom: `1px dashed ${CARD_BORDER}`, flexShrink: 0 }}>
+        <div style={{ padding: "22px 26px 0", position: "sticky", top: 0, background: MODAL_BG, zIndex: 10, borderRadius: event.image_url ? 0 : "24px 24px 0 0", borderBottom: `1px solid ${CARD_BORDER}`, flexShrink: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
             <div style={{ flex: 1, marginRight: 12 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
                 <CategoryChip cat={cat} />
                 <StatusPill status={event.status} />
-                {learnMoreHref && <span className="eyebrow" style={{ fontSize: 10, color: GREEN2, background: "rgba(80,194,115,0.12)", border: `1px solid ${GREEN2}44`, padding: "3px 9px", borderRadius: 999 }}>🔗 Full page available</span>}
+                {learnMoreHref && <span className="eyebrow" style={{ fontSize: 10, color: GREEN_DARK, background: "#f0fdf4", border: "1px solid #bbf7d0", padding: "3px 9px", borderRadius: 999 }}>🔗 Full page available</span>}
               </div>
               <h2 style={{ margin: "0 0 4px", fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 24, color: TEXT, lineHeight: 1.2 }}>{event.title}</h2>
               <p style={{ margin: 0, fontSize: 13, color: MUTED }}>{event.subtitle}</p>
             </div>
-            {!event.image_url && <button onClick={onClose} style={{ background: "rgba(243,241,234,0.06)", border: `1px solid ${CARD_BORDER}`, color: TEXT, borderRadius: "50%", width: 32, height: 32, cursor: "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>✕</button>}
+            {!event.image_url && <button onClick={onClose} style={{ background: CARD_BG, border: `1px solid ${CARD_BORDER}`, color: TEXT, borderRadius: "50%", width: 32, height: 32, cursor: "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>✕</button>}
           </div>
           <div style={{ display: "flex", gap: 4 }}>
             {tabs.map(t => (
               <button key={t.id} onClick={() => setTab(t.id)} className="eyebrow"
-                style={{ padding: "9px 14px", background: "none", border: "none", borderBottom: tab === t.id ? `2px solid ${GREEN2}` : "2px solid transparent", color: tab === t.id ? TEXT : MUTED, fontWeight: tab === t.id ? 700 : 500, fontSize: 10, cursor: "pointer", marginBottom: -1 }}>
+                style={{ padding: "9px 14px", background: "none", border: "none", borderBottom: tab === t.id ? `2px solid ${cat.accent}` : "2px solid transparent", color: tab === t.id ? TEXT : MUTED, fontWeight: tab === t.id ? 700 : 500, fontSize: 10, cursor: "pointer", marginBottom: -1 }}>
                 {t.label}
               </button>
             ))}
@@ -355,7 +357,7 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
 
         <div style={{ padding: "22px 26px", flex: 1, overflowY: "auto" }}>
           {tab === "overview" && <>
-            <p style={{ margin: "0 0 22px", fontSize: 14, lineHeight: 1.8, color: "#D7E4D8" }}>{event.description}</p>
+            <p style={{ margin: "0 0 22px", fontSize: 14, lineHeight: 1.8, color: "#33402F" }}>{event.description}</p>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 22 }}>
               {([
                 ["Date", event.date_start + (event.date_end ? ` – ${event.date_end}` : "")],
@@ -367,54 +369,54 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
                 event.capacity ? ["Capacity", event.capacity.toLocaleString()] : null,
                 event.attendees_count ? ["Attended", event.attendees_count.toLocaleString()] : null,
               ] as ([string, string | number] | null)[]).filter((x): x is [string, string | number] => x !== null).map(([k, v]) => (
-                <div key={String(k)} style={{ background: "rgba(243,241,234,0.04)", border: `1px dashed ${CARD_BORDER}`, borderRadius: 12, padding: "11px 13px" }}>
+                <div key={String(k)} style={{ background: CARD_BG, border: `1px solid ${CARD_BORDER}`, borderRadius: 12, padding: "11px 13px" }}>
                   <p className="eyebrow" style={{ margin: 0, fontSize: 9, color: MUTED, letterSpacing: "0.1em" }}>{k}</p>
                   <p className="tabular" style={{ margin: "4px 0 0", fontSize: 13, fontWeight: 600, color: TEXT }}>{String(v)}</p>
                 </div>
               ))}
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: (event.sponsors?.length || 0) > 0 ? 18 : 0 }}>
-              {(event.tags || []).map(t => <span key={t} className="eyebrow" style={{ padding: "4px 12px", borderRadius: 999, fontSize: 10, background: "rgba(243,241,234,0.06)", border: "1px solid rgba(243,241,234,0.15)", color: MUTED2 }}>{t}</span>)}
+              {(event.tags || []).map(t => <span key={t} className="eyebrow" style={{ padding: "4px 12px", borderRadius: 999, fontSize: 10, background: CARD_BG, border: `1px solid ${CARD_BORDER}`, color: MUTED2 }}>{t}</span>)}
             </div>
             {(event.sponsors?.length || 0) > 0 && (
               <div style={{ marginTop: 14 }}>
                 <p className="eyebrow" style={{ margin: "0 0 8px", fontSize: 9, color: MUTED, letterSpacing: "0.1em" }}>Sponsors & Partners</p>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{event.sponsors.map(s => <span key={s} style={{ padding: "4px 12px", background: "rgba(243,241,234,0.05)", borderRadius: 8, fontSize: 12, color: "#D7E4D8", fontWeight: 500 }}>{s}</span>)}</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{event.sponsors.map(s => <span key={s} style={{ padding: "4px 12px", background: CARD_BG, borderRadius: 8, fontSize: 12, color: "#374151", fontWeight: 500 }}>{s}</span>)}</div>
               </div>
             )}
 
             {(event.contact_phone || event.contact_email || event.website_url || event.maps_url || event.social_instagram || event.social_facebook) && (
-              <div style={{ marginTop: 18, background: "rgba(243,241,234,0.04)", border: `1px dashed ${CARD_BORDER}`, borderRadius: 14, padding: "16px 18px" }}>
+              <div style={{ marginTop: 18, background: CARD_BG, border: `1px solid ${CARD_BORDER}`, borderRadius: 14, padding: "16px 18px" }}>
                 <p className="eyebrow" style={{ margin: "0 0 12px", fontSize: 9, color: MUTED, letterSpacing: "0.1em" }}>Contact & Links</p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                   {event.contact_name && (
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <span style={{ fontSize: 14 }}>👤</span>
-                      <span style={{ fontSize: 13, color: "#D7E4D8", fontWeight: 600 }}>{event.contact_name}</span>
+                      <span style={{ fontSize: 13, color: "#33402F", fontWeight: 600 }}>{event.contact_name}</span>
                     </div>
                   )}
                   {event.contact_phone && (
                     <a href={`tel:${event.contact_phone}`} style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
                       <span style={{ fontSize: 14 }}>📞</span>
-                      <span style={{ fontSize: 13, color: GREEN2, fontWeight: 600 }}>{event.contact_phone}</span>
+                      <span style={{ fontSize: 13, color: GREEN_DARK, fontWeight: 600 }}>{event.contact_phone}</span>
                     </a>
                   )}
                   {event.contact_email && (
                     <a href={`mailto:${event.contact_email}`} style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
                       <span style={{ fontSize: 14 }}>✉️</span>
-                      <span style={{ fontSize: 13, color: GREEN2, fontWeight: 600 }}>{event.contact_email}</span>
+                      <span style={{ fontSize: 13, color: GREEN_DARK, fontWeight: 600 }}>{event.contact_email}</span>
                     </a>
                   )}
                   {event.website_url && (
                     <a href={event.website_url} target="_blank" rel="noopener noreferrer" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
                       <span style={{ fontSize: 14 }}>🌐</span>
-                      <span style={{ fontSize: 13, color: GREEN2, fontWeight: 600 }}>{event.website_url.replace(/^https?:\/\//, "")}</span>
+                      <span style={{ fontSize: 13, color: GREEN_DARK, fontWeight: 600 }}>{event.website_url.replace(/^https?:\/\//, "")}</span>
                     </a>
                   )}
                   {event.maps_url && (
                     <a href={event.maps_url} target="_blank" rel="noopener noreferrer" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
                       <span style={{ fontSize: 14 }}>📍</span>
-                      <span style={{ fontSize: 13, color: GREEN2, fontWeight: 600 }}>View on Google Maps</span>
+                      <span style={{ fontSize: 13, color: GREEN_DARK, fontWeight: 600 }}>View on Google Maps</span>
                     </a>
                   )}
                   {(event.social_instagram || event.social_facebook) && (
@@ -422,13 +424,13 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
                       {event.social_instagram && (
                         <a href={event.social_instagram.startsWith("http") ? event.social_instagram : `https://instagram.com/${event.social_instagram.replace("@", "")}`}
                           target="_blank" rel="noopener noreferrer"
-                          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 13px", background: "rgba(243,241,234,0.05)", border: `1px solid ${CARD_BORDER}`, borderRadius: 8, fontSize: 12, color: "#D7E4D8", fontWeight: 600, textDecoration: "none" }}>
+                          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 13px", background: "#fff", border: `1px solid ${CARD_BORDER}`, borderRadius: 8, fontSize: 12, color: "#374151", fontWeight: 600, textDecoration: "none" }}>
                           <span>📷</span> Instagram
                         </a>
                       )}
                       {event.social_facebook && (
                         <a href={event.social_facebook} target="_blank" rel="noopener noreferrer"
-                          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 13px", background: "rgba(243,241,234,0.05)", border: `1px solid ${CARD_BORDER}`, borderRadius: 8, fontSize: 12, color: "#D7E4D8", fontWeight: 600, textDecoration: "none" }}>
+                          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 13px", background: "#fff", border: `1px solid ${CARD_BORDER}`, borderRadius: 8, fontSize: 12, color: "#374151", fontWeight: 600, textDecoration: "none" }}>
                           <span>👥</span> Facebook
                         </a>
                       )}
@@ -442,7 +444,7 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
           {tab === "lineup" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {lineup.map((item, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, background: "rgba(243,241,234,0.04)", border: `1px dashed ${CARD_BORDER}`, borderRadius: 14, padding: "12px 16px" }}>
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, background: CARD_BG, border: `1px solid ${CARD_BORDER}`, borderRadius: 14, padding: "12px 16px" }}>
                   {item.photo_url
                     ? <img src={item.photo_url} alt={item.name} style={{ width: 46, height: 46, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
                     : <AvatarCircle initials={item.avatar_initials || item.name.slice(0, 2).toUpperCase()} color={item.avatar_color || cat.accent} size={46} />
@@ -450,7 +452,7 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
                   <div style={{ flex: 1 }}>
                     <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: TEXT }}>{item.name}</p>
                     <p style={{ margin: "2px 0 0", fontSize: 12, color: MUTED }}>{[item.sub_role, item.genre, item.company, item.team, item.origin ? `From ${item.origin}` : null].filter(Boolean).join(" · ")}</p>
-                    {item.topic && <span className="eyebrow" style={{ display: "inline-block", marginTop: 4, padding: "2px 8px", background: cat.accent + "1f", color: cat.accent, borderRadius: 999, fontSize: 10 }}>"{item.topic}"</span>}
+                    {item.topic && <span className="eyebrow" style={{ display: "inline-block", marginTop: 4, padding: "2px 8px", background: cat.accent + "16", color: cat.accent, borderRadius: 999, fontSize: 10 }}>"{item.topic}"</span>}
                   </div>
                   {item.upcoming_shows !== undefined && (
                     <div style={{ textAlign: "right" }}>
@@ -484,8 +486,8 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
           {tab === "prizes" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {(event.prizes || []).map((item, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, background: i === 0 ? "rgba(232,184,75,0.08)" : "rgba(243,241,234,0.04)", borderRadius: 12, padding: "12px 16px", border: `1px dashed ${i === 0 ? "rgba(232,184,75,0.35)" : CARD_BORDER}` }}>
-                  <div style={{ width: 32, height: 32, borderRadius: "50%", background: i === 0 ? GOLD : i === 1 ? "#9ca3af" : i === 2 ? "#fb923c" : cat.accent + "33", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 800, color: i <= 2 ? "#0B1410" : cat.accent, flexShrink: 0 }}>{i + 1}</div>
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, background: i === 0 ? "#fffbeb" : CARD_BG, borderRadius: 12, padding: "12px 16px", border: `1px solid ${i === 0 ? "#fde68a" : CARD_BORDER}` }}>
+                  <div style={{ width: 32, height: 32, borderRadius: "50%", background: i === 0 ? GOLD : i === 1 ? "#9ca3af" : i === 2 ? "#fb923c" : cat.accent + "22", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 800, color: i <= 2 ? "#0B1410" : cat.accent, flexShrink: 0 }}>{i + 1}</div>
                   <div>
                     <p style={{ margin: 0, fontWeight: 700, fontSize: 14, color: TEXT }}>{item.rank_label}</p>
                     <p style={{ margin: "2px 0 0", fontSize: 12, color: MUTED }}>{item.reward}</p>
@@ -496,26 +498,26 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
           )}
         </div>
 
-        <div style={{ padding: "16px 26px", borderTop: `1px dashed ${CARD_BORDER}`, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", position: "sticky", bottom: 0, background: MODAL_BG, borderRadius: "0 0 24px 24px", flexShrink: 0 }}>
+        <div style={{ padding: "16px 26px", borderTop: `1px solid ${CARD_BORDER}`, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", position: "sticky", bottom: 0, background: MODAL_BG, borderRadius: "0 0 24px 24px", flexShrink: 0 }}>
           {learnMoreHref ? (
             <button onClick={handleLearnMore}
-              style={{ flex: 2, padding: "13px 22px", background: "#fff", color: "#0F550C", border: "none", borderRadius: 999, fontWeight: 700, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 140 }}>
+              style={{ flex: 2, padding: "13px 22px", background: GREEN, color: "#fff", border: "none", borderRadius: 999, fontWeight: 700, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 140 }}>
               {isLearnMoreExternal ? "🌐" : "→"} Learn More
             </button>
           ) : (
-            <div style={{ flex: 2, padding: "13px 22px", background: "rgba(243,241,234,0.03)", border: `1px dashed ${CARD_BORDER}`, borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 140 }}>
+            <div style={{ flex: 2, padding: "13px 22px", background: CARD_BG, border: `1px dashed ${CARD_BORDER}`, borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, minWidth: 140 }}>
               <span style={{ fontSize: 13 }}>🔗</span>
               <span style={{ fontSize: 13, fontWeight: 600, color: MUTED }}>More details coming soon</span>
             </div>
           )}
           {!isPast && registerHref && (
             <button onClick={handleRegister}
-              style={{ flex: learnMoreHref ? 1 : 2, padding: "13px 22px", background: learnMoreHref ? "transparent" : "#fff", color: learnMoreHref ? TEXT : "#0F550C", border: learnMoreHref ? `1px solid rgba(243,241,234,0.3)` : "none", borderRadius: 999, fontWeight: 700, fontSize: 14, cursor: "pointer", minWidth: 100 }}>
+              style={{ flex: learnMoreHref ? 1 : 2, padding: "13px 22px", background: learnMoreHref ? "#fff" : GREEN, color: learnMoreHref ? TEXT : "#fff", border: learnMoreHref ? `1px solid ${CARD_BORDER}` : "none", borderRadius: 999, fontWeight: 700, fontSize: 14, cursor: "pointer", minWidth: 100 }}>
               {event.status === "postponed" ? "Get Notified" : "Register →"}
             </button>
           )}
           <button onClick={onClose}
-            style={{ padding: "13px 18px", background: "transparent", color: MUTED, border: `1px solid rgba(243,241,234,0.16)`, borderRadius: 999, fontWeight: 600, fontSize: 14, cursor: "pointer", flexShrink: 0 }}>
+            style={{ padding: "13px 18px", background: "#fff", color: MUTED, border: `1px solid ${CARD_BORDER}`, borderRadius: 999, fontWeight: 600, fontSize: 14, cursor: "pointer", flexShrink: 0 }}>
             Close
           </button>
           {(event.contact_phone || event.contact_email) && (
@@ -534,10 +536,10 @@ function DetailModal({ event, onClose }: { event: DBEvent; onClose: () => void }
 
 function SkeletonCard() {
   return (
-    <div style={{ background: CARD_BG, border: `1px dashed ${CARD_BORDER}`, borderRadius: 18, overflow: "hidden" }}>
-      <div style={{ height: 140, background: "rgba(243,241,234,0.05)", animation: "shimmer 1.5s infinite" }} />
+    <div style={{ background: "#fff", border: `1px solid ${CARD_BORDER}`, borderRadius: 18, overflow: "hidden" }}>
+      <div style={{ height: 140, background: CARD_BG, animation: "shimmer 1.5s infinite" }} />
       <div style={{ padding: "16px 18px" }}>
-        {[80, 140, 40, 40, 40].map((w, i) => <div key={i} style={{ height: i === 0 ? 16 : 12, width: `${w}%`, background: "rgba(243,241,234,0.06)", borderRadius: 6, marginBottom: 10, animation: "shimmer 1.5s infinite" }} />)}
+        {[80, 140, 40, 40, 40].map((w, i) => <div key={i} style={{ height: i === 0 ? 16 : 12, width: `${w}%`, background: CARD_BG, borderRadius: 6, marginBottom: 10, animation: "shimmer 1.5s infinite" }} />)}
       </div>
     </div>
   );
@@ -546,7 +548,7 @@ function SkeletonCard() {
 function EventDiscoveryIllustration() {
   return (
     <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }}
-      style={{ position: "relative", borderRadius: 24, border: `1px dashed ${CARD_BORDER}`, background: "rgba(243,241,234,0.02)", padding: "64px 24px", textAlign: "center" }}>
+      style={{ position: "relative", borderRadius: 24, border: `1px dashed ${CARD_BORDER}`, background: CARD_BG, padding: "64px 24px", textAlign: "center" }}>
       <p style={{ fontSize: 34, margin: "0 0 10px" }}>🎪</p>
       <p className="eyebrow" style={{ margin: 0, fontSize: 11, color: MUTED }}>No featured events yet — check back soon</p>
     </motion.div>
@@ -554,7 +556,7 @@ function EventDiscoveryIllustration() {
 }
 
 // ── MAIN PAGE ──────────────────────────────────────────────────────
-export default function EventDiscoveryPage() {
+function EventDiscoveryPageContent() {
   const searchParams = useSearchParams();
   const [activeCategory, setActiveCategory] = useState<CategoryId>("all");
   const [search, setSearch] = useState(searchParams.get("search") || "");
@@ -586,9 +588,54 @@ export default function EventDiscoveryPage() {
   const counts = useMemo(() => { const c: Record<string, number> = { all: events.length }; CATEGORIES.forEach(cat => { c[cat.id] = events.filter(e => e.category === cat.id).length; }); return c; }, [events]);
 
   const heroSlides: HeroSlide[] = useMemo(() => {
-    const curated: HeroSlide[] = banners.slice().sort((a, b) => a.display_order - b.display_order).map(b => ({ ...b }));
+    // Split camelCase ("EduFest" -> "Edu Fest") before normalizing, since
+    // curated banner titles and event titles often differ only in spacing
+    // or capitalization ("Mateng EduFest 2026" vs "Mateng Edu Fest 2026").
+    const norm = (s: string) => s.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const wordSet = (s: string) => new Set(norm(s).split(" ").filter(Boolean));
+
+    // Try to find the live event a curated banner is "about" — via its
+    // link (most reliable) or a fuzzy word-overlap title match — so we
+    // can borrow that event's actual uploaded photo instead of treating
+    // an updated photo as a brand-new, separate slide. The banners
+    // table's own image_url often points at a static /public file that
+    // can go missing or was never added; the event's photo (uploaded
+    // through the admin Media tab) is always the current, working one.
+    const findMatchingEvent = (banner: Banner) => {
+      if (banner.link_href) {
+        const byHref = events.find(e => e.page_href && e.page_href === banner.link_href);
+        if (byHref) return byHref;
+      }
+      const bWords = wordSet(banner.title);
+      if (bWords.size === 0) return undefined;
+      let best: DBEvent | undefined; let bestScore = 0;
+      for (const e of events) {
+        const eWords = wordSet(e.title);
+        if (eWords.size === 0) continue;
+        const overlap = [...bWords].filter(w => eWords.has(w)).length;
+        const score = overlap / Math.min(bWords.size, eWords.size);
+        if (score > bestScore) { bestScore = score; best = e; }
+      }
+      // Require most of the words to line up (allows a stray extra word
+      // like a year or subtitle fragment, but not an unrelated event).
+      return bestScore >= 0.6 ? best : undefined;
+    };
+
+    const matchedIds = new Set<string>();
+    const curated: HeroSlide[] = banners
+      .slice()
+      .sort((a, b) => a.display_order - b.display_order)
+      .map(b => {
+        const matched = findMatchingEvent(b);
+        if (matched) matchedIds.add(matched.id);
+        return matched?.image_url ? { ...b, image_url: matched.image_url } : { ...b };
+      });
+
+    const curatedTitles = new Set(curated.map(b => norm(b.title)));
     const eventSlides: HeroSlide[] = events
       .filter(e => e.image_url && (e.status === "upcoming" || e.status === "open" || e.status === "ongoing"))
+      // skip events already represented by a matched or same-titled curated banner
+      .filter(e => !matchedIds.has(e.id) && !curatedTitles.has(norm(e.title)))
       .sort((a, b) => (Number(b.featured) - Number(a.featured)) || a.date_start.localeCompare(b.date_start))
       .slice(0, 6)
       .map(e => ({
@@ -607,74 +654,29 @@ export default function EventDiscoveryPage() {
     <div className={`${fraunces.variable} ${inter.variable} ${mono.variable} w-full min-h-screen flex flex-col`}
       style={{ background: BG, color: TEXT, fontFamily: "var(--font-body)" }}>
       <style jsx global>{`
-        @keyframes dash-run { to { stroke-dashoffset: -200; } }
         @keyframes pulse-glow { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
         @keyframes pop-in { 0% { opacity:0; transform: translateY(24px) scale(0.98); } 100% { opacity:1; transform: translateY(0) scale(1); } }
         @keyframes ring-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(63,166,55,0.35);} 50% { box-shadow: 0 0 0 10px rgba(63,166,55,0);} }
         @keyframes ring-pulse-purple { 0%,100% { box-shadow: 0 0 0 0 rgba(80,194,115,0.35);} 50% { box-shadow: 0 0 0 10px rgba(80,194,115,0);} }
-        @keyframes shimmer { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .route-line { stroke-dasharray: 5 9; animation: dash-run 14s linear infinite; }
+        @keyframes shimmer { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
         .eyebrow { font-family: var(--font-mono); letter-spacing: 0.18em; text-transform: uppercase; }
         .tabular { font-family: var(--font-mono); font-feature-settings: "tnum" 1; }
         .live-dot { animation: pulse-glow 1.8s ease-in-out infinite; }
-        .stub-row > div + div { position: relative; }
-        .stub-row > div + div::before {
-          content: ""; position: absolute; left: -1px; top: 50%; transform: translateY(-50%);
-          width: 10px; height: 10px; border-radius: 9999px; background: ${BG};
-          box-shadow: 0 -34px 0 -1px ${BG}, 0 34px 0 -1px ${BG};
-        }
         .event-card { animation: pop-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; transition: box-shadow 0.35s ease; }
-        .event-card-green { box-shadow: 0 0 0 1px rgba(63,166,55,0.25), 0 20px 60px -20px rgba(63,166,55,0.35); }
-        .event-card-purple { box-shadow: 0 0 0 1px rgba(80,194,115,0.25), 0 20px 60px -20px rgba(80,60,180,0.45); }
+        .event-card-green { box-shadow: 0 0 0 1px rgba(63,166,55,0.2), 0 24px 60px -26px rgba(63,166,55,0.4); }
+        .event-card-purple { box-shadow: 0 0 0 1px rgba(80,194,115,0.2), 0 24px 60px -26px rgba(80,60,180,0.35); }
         .featured-badge { animation: ring-pulse-purple 2.2s ease-in-out infinite; }
         .featured-badge-green { animation: ring-pulse 2.2s ease-in-out infinite; }
-        input:focus, select:focus { outline: none; }
+        input:focus, select:focus { outline: none; border-color: ${GREEN} !important; }
         ::-webkit-scrollbar { width: 5px; }
-        ::-webkit-scrollbar-thumb { background: rgba(243,241,234,0.2); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: ${CARD_BORDER}; border-radius: 4px; }
         @media (max-width: 720px) { .hero-stub { display: none; } }
       `}</style>
 
       <div className="flex-grow">
-        {/* HERO TEXT */}
-        <section className="relative flex flex-col items-center text-center px-6 pt-24 pb-10 overflow-hidden">
-          <svg className="absolute inset-x-0 top-6 w-full max-w-4xl mx-auto opacity-40 pointer-events-none" viewBox="0 0 800 160" fill="none">
-            <path d="M20 120 C 180 20, 280 140, 420 60 S 640 20, 780 90" stroke={GREEN} strokeWidth="1.5" className="route-line" />
-            <circle cx="20" cy="120" r="4" fill={GOLD} />
-            <circle cx="420" cy="60" r="4" fill={GREEN} />
-            <circle cx="780" cy="90" r="4" fill={GOLD} />
-          </svg>
-
-          <span className="eyebrow relative text-[11px]" style={{ color: MUTED2, marginBottom: 20 }}>Manipur Event Discovery</span>
-
-          <h1 className="relative text-4xl sm:text-5xl md:text-6xl leading-[1.08] max-w-3xl" style={{ fontFamily: "var(--font-display)", fontWeight: 600, color: TEXT }}>
-            Every Event. <em style={{ fontStyle: "italic", color: GREEN }}>One Platform.</em>
-          </h1>
-
-          <p className="relative mt-5 max-w-xl text-sm sm:text-base leading-relaxed" style={{ color: MUTED }}>
-            Concerts, summits, medical conclaves, education fests, cultural festivals, sports championships, workshops and exhibitions — all in one place.
-          </p>
-
-          <div className="relative w-full max-w-md mt-8">
-            <span style={{ position: "absolute", left: 18, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: MUTED }}>🔍</span>
-            <input type="text" placeholder="Search events, artists, topics, venues…" value={search} onChange={e => setSearch(e.target.value)}
-              style={{ width: "100%", padding: "13px 40px 13px 46px", fontSize: 14, borderRadius: 999, background: "rgba(243,241,234,0.05)", border: `1px solid ${CARD_BORDER}`, color: TEXT }} />
-            {search && <button onClick={() => setSearch("")} style={{ position: "absolute", right: 16, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: MUTED, cursor: "pointer", fontSize: 15 }}>✕</button>}
-          </div>
-
-          <div className="stub-row relative flex flex-row justify-center gap-8 md:gap-14 rounded-2xl px-8 py-6 mt-10"
-            style={{ background: "rgba(243,241,234,0.03)", border: `1px dashed ${CARD_BORDER}` }}>
-            {([[events.length, "Events"], [events.filter(e => e.status === "open" || e.status === "upcoming").length, "Upcoming"], [CATEGORIES.length - 1, "Categories"]] as [number, string][]).map(([n, l]) => (
-              <div key={l}>
-                <p className="tabular" style={{ margin: 0, fontSize: 22, fontWeight: 700, color: GREEN }}>{n}</p>
-                <p className="eyebrow" style={{ margin: "2px 0 0", fontSize: 9, color: MUTED }}>{l}</p>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {/* HERO CAROUSEL — ticket banner */}
-        <section className="w-full flex justify-center px-4 mt-6">
-          <div className="w-full max-w-5xl">
+        {/* HERO CAROUSEL — ticket banner (headline section removed), full-bleed */}
+        <section className="w-full px-3 sm:px-5 md:px-8 pt-6">
+          <div className="w-full">
             {heroSlides.length > 0 ? (
               <HeroCarousel slides={heroSlides} onEventOpen={setSelectedEvent} />
             ) : !loading ? (
@@ -684,10 +686,10 @@ export default function EventDiscoveryPage() {
         </section>
 
         {/* EXPLORE EVENTS HEADING */}
-        <section className="mt-20 px-6 flex flex-col items-center">
+        <section className="mt-16 px-6 flex flex-col items-center">
           <span className="eyebrow text-[11px]" style={{ color: MUTED2, marginBottom: 10 }}>Browse</span>
-          <h2 className="text-2xl sm:text-3xl mb-2" style={{ fontFamily: "var(--font-display)", fontWeight: 600 }}>
-            Explore <em style={{ fontStyle: "italic", color: GOLD }}>every</em> event
+          <h2 className="text-2xl sm:text-3xl mb-2 text-center" style={{ fontFamily: "var(--font-display)", fontWeight: 600 }}>
+            Explore <em style={{ fontStyle: "italic", color: GOLD_TEXT }}>every</em> event
           </h2>
         </section>
 
@@ -698,9 +700,9 @@ export default function EventDiscoveryPage() {
               const active = activeCategory === cat.id;
               return (
                 <button key={cat.id} onClick={() => setActiveCategory(cat.id)} className="eyebrow"
-                  style={{ padding: "8px 16px", borderRadius: 999, border: `1px ${active ? "solid" : "dashed"} ${active ? cat.accent : CARD_BORDER}`, background: active ? cat.accent + "1f" : "rgba(243,241,234,0.02)", color: active ? TEXT : MUTED, fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, transition: "all 0.15s" }}>
+                  style={{ padding: "8px 16px", borderRadius: 999, border: `1.5px solid ${active ? cat.accent : CARD_BORDER}`, background: active ? cat.accent + "12" : "#fff", color: active ? cat.accent : MUTED, fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, transition: "all 0.15s" }}>
                   <span style={{ fontFamily: "var(--font-body)", fontSize: 13 }}>{cat.icon}</span>{cat.label}
-                  <span className="tabular" style={{ fontSize: 9, padding: "0 6px", borderRadius: 999, background: active ? cat.accent + "33" : "rgba(243,241,234,0.06)", color: active ? cat.accent : MUTED }}>{counts[cat.id] || 0}</span>
+                  <span className="tabular" style={{ fontSize: 9, padding: "0 6px", borderRadius: 999, background: active ? cat.accent + "20" : CARD_BG, color: active ? cat.accent : MUTED }}>{counts[cat.id] || 0}</span>
                 </button>
               );
             })}
@@ -708,30 +710,36 @@ export default function EventDiscoveryPage() {
         </div>
 
         {/* TOOLBAR */}
-        <div className="max-w-5xl mx-auto px-6 mt-8 mb-6" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div className="max-w-[1400px] mx-auto px-3 sm:px-5 md:px-8 mt-8 mb-6" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ position: "relative", flex: "0 1 300px", minWidth: 200 }}>
+            <span style={{ position: "absolute", left: 13, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: MUTED }}>🔍</span>
+            <input type="text" placeholder="Search events, venues, tags…" value={search} onChange={e => setSearch(e.target.value)}
+              style={{ width: "100%", padding: "9px 32px 9px 34px", fontSize: 12.5, border: `1px solid ${CARD_BORDER}`, borderRadius: 999, background: "#fff", color: TEXT }} />
+            {search && <button onClick={() => setSearch("")} style={{ position: "absolute", right: 11, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: MUTED, cursor: "pointer", fontSize: 13 }}>✕</button>}
+          </div>
           <p style={{ margin: 0, fontSize: 13, color: MUTED }}><strong style={{ color: TEXT }}>{filtered.length}</strong> events{activeCategory !== "all" && ` · ${CATEGORIES.find(c => c.id === activeCategory)?.label}`}</p>
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
             {(["all", "upcoming", "open", "past", "postponed"] as const).map(s => (
               <button key={s} onClick={() => setStatusFilter(s)} className="eyebrow"
-                style={{ padding: "5px 11px", borderRadius: 999, border: `1px solid ${statusFilter === s ? GREEN2 : CARD_BORDER}`, background: statusFilter === s ? "rgba(80,194,115,0.14)" : "transparent", color: statusFilter === s ? GREEN2 : MUTED, fontSize: 9, cursor: "pointer" }}>
+                style={{ padding: "5px 11px", borderRadius: 999, border: `1px solid ${statusFilter === s ? GREEN_DARK : CARD_BORDER}`, background: statusFilter === s ? "#f0fdf4" : "#fff", color: statusFilter === s ? GREEN_DARK : MUTED, fontSize: 9, cursor: "pointer" }}>
                 {s === "all" ? "All Status" : s}
               </button>
             ))}
             <select value={sortBy} onChange={e => setSortBy(e.target.value as "date" | "name")}
-              style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${CARD_BORDER}`, background: "rgba(243,241,234,0.03)", fontSize: 12, color: TEXT, cursor: "pointer" }}>
-              <option value="date" style={{ color: "#000" }}>Date</option>
-              <option value="name" style={{ color: "#000" }}>Name</option>
+              style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${CARD_BORDER}`, background: "#fff", fontSize: 12, color: TEXT, cursor: "pointer" }}>
+              <option value="date">Date</option>
+              <option value="name">Name</option>
             </select>
             {(activeCategory !== "all" || statusFilter !== "all" || search) && (
               <button onClick={() => { setActiveCategory("all"); setStatusFilter("all"); setSearch(""); }} className="eyebrow"
-                style={{ padding: "5px 12px", borderRadius: 999, border: "none", background: "rgba(248,113,113,0.14)", color: "#fca5a5", fontSize: 9, cursor: "pointer" }}>Clear</button>
+                style={{ padding: "5px 12px", borderRadius: 999, border: "none", background: "#fee2e2", color: "#991b1b", fontSize: 9, cursor: "pointer" }}>Clear</button>
             )}
           </div>
         </div>
 
         {/* GRID */}
-        <div className="max-w-5xl mx-auto px-6 pb-24">
-          {error && <div style={{ background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 12, padding: "14px 18px", marginBottom: 20, color: "#fca5a5", fontSize: 14 }}>Failed to load events: {error}. Check Supabase credentials in .env.local</div>}
+        <div className="max-w-[1400px] mx-auto px-3 sm:px-5 md:px-8 pb-24">
+          {error && <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 12, padding: "14px 18px", marginBottom: 20, color: "#991b1b", fontSize: 14 }}>Failed to load events: {error}. Check Supabase credentials in .env.local</div>}
 
           {loading ? (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(270px,1fr))", gap: 18 }}>{Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}</div>
@@ -759,5 +767,13 @@ export default function EventDiscoveryPage() {
         <Footer />
       </footer>
     </div>
+  );
+}
+
+export default function EventDiscoveryPage() {
+  return (
+    <Suspense fallback={null}>
+      <EventDiscoveryPageContent />
+    </Suspense>
   );
 }

@@ -1,20 +1,13 @@
 // lib/auth/staffAuth.ts
 //
-// Mirrors your existing adminAuth.ts (httpOnly session cookie, verified
-// server-side). Two things are deliberately different from the admin
-// version:
-//
-// 1. A separate signing secret (STAFF_SESSION_SECRET), so an admin
-//    token can never be replayed as a staff token or vice versa, even
-//    if one secret were ever compromised.
-//
-// 2. Section-level authorization (requireStaffSection) is NOT done in
-//    middleware. Middleware runs on the Edge runtime and only confirms
-//    "is there a valid session" — it doesn't hit the database. The
-//    "which sections can this staff member reach" check runs
-//    server-side at the top of each protected section's layout/page,
-//    so a role change made by an admin takes effect on the staff
-//    member's very next request, not just their next login.
+// Changed from earlier version: a staff member can now have MULTIPLE
+// roles (via staff_role_assignments), and their access is the UNION of
+// every section any of those roles grants. `StaffSessionPayload.roleId`
+// is dropped — role membership is looked up fresh from the DB on every
+// request instead of being baked into the JWT, which is actually a nice
+// side effect: it means admins can add/remove BOTH individual role
+// assignments and change what a role grants, and it takes effect on the
+// staff member's very next request either way, with no token reissue.
 
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
@@ -27,13 +20,6 @@ export const STAFF_SESSION_COOKIE_NAME = "staff_session";
 const staffSessionSecretEnv = process.env.STAFF_SESSION_SECRET;
 
 if (!staffSessionSecretEnv) {
-  // Without this check, `new TextEncoder().encode(undefined!)` silently
-  // encodes the *string* "undefined" (or an empty string, depending on
-  // engine), and jose then fails deep inside SignJWT.sign() with an
-  // opaque crypto error — which is exactly the kind of thing that looks
-  // like "login works until you actually submit it" and gives no clue
-  // why. Failing loudly here, at import time, points straight at the
-  // missing env var instead.
   throw new Error(
     "STAFF_SESSION_SECRET is not set. Add it to your .env file (a long random string, separate from " +
       "whatever secret signs the admin cookie), then restart the dev server — Next.js only reads .env " +
@@ -45,7 +31,10 @@ const secret = new TextEncoder().encode(staffSessionSecretEnv);
 
 export interface StaffSessionPayload {
   staffId: string;
-  roleId: string | null;
+  // Deprecated: role membership is no longer read from the token — see
+  // the file header. Kept optional so any old token still in the wild
+  // (or a login route you haven't updated yet) doesn't break decoding.
+  roleId?: string | null;
 }
 
 export async function createStaffSession(payload: StaffSessionPayload) {
@@ -65,9 +54,6 @@ export async function createStaffSession(payload: StaffSessionPayload) {
   });
 }
 
-// Edge-safe core verifier — takes a raw token rather than reading cookies
-// itself, matching verifyAdminSession(token)'s signature in your
-// adminAuth.ts. This is what middleware.ts calls directly.
 export async function verifyStaffToken(token: string): Promise<StaffSessionPayload | null> {
   try {
     const { payload } = await jwtVerify(token, secret);
@@ -77,10 +63,6 @@ export async function verifyStaffToken(token: string): Promise<StaffSessionPaylo
   }
 }
 
-// Convenience wrapper for server components, layouts, and API routes
-// (Node runtime, where next/headers cookies() is available) — reads the
-// cookie, then calls verifyStaffToken. Not used by middleware.ts, which
-// reads req.cookies directly to stay Edge-compatible.
 export async function getStaffSession(): Promise<StaffSessionPayload | null> {
   const store = await cookies();
   const token = store.get(STAFF_SESSION_COOKIE_NAME)?.value;
@@ -95,15 +77,21 @@ export async function clearStaffSession() {
 
 export type StaffAuthFailureReason = "no_session" | "no_role" | "disabled" | "forbidden";
 
-// Authorization check for a single admin section. Call this at the top
-// of each protected section's layout.tsx or page.tsx — see
-// app/(main)/admin/(protected)/cargo/layout.tsx for the pattern.
+// Fetches every role_id assigned to this staff member. Centralized here
+// since both requireStaffSection and getStaffAllowedSections need it.
+async function getAssignedRoleIds(staffId: string): Promise<string[]> {
+  const { data } = await supabase
+    .from("staff_role_assignments")
+    .select("role_id")
+    .eq("staff_id", staffId);
+  return (data ?? []).map((r) => r.role_id as string);
+}
+
 export async function requireStaffSection(
   section: SectionKey
 ): Promise<{ ok: true } | { ok: false; reason: StaffAuthFailureReason }> {
   const session = await getStaffSession();
   if (!session) return { ok: false, reason: "no_session" };
-  if (!session.roleId) return { ok: false, reason: "no_role" };
 
   const { data: staff } = await supabase
     .from("staff")
@@ -115,11 +103,15 @@ export async function requireStaffSection(
     return { ok: false, reason: "disabled" };
   }
 
+  const roleIds = await getAssignedRoleIds(session.staffId);
+  if (!roleIds.length) return { ok: false, reason: "no_role" };
+
   const { data: perm } = await supabase
     .from("staff_role_permissions")
     .select("section")
-    .eq("role_id", session.roleId)
+    .in("role_id", roleIds)
     .eq("section", section)
+    .limit(1)
     .maybeSingle();
 
   return perm ? { ok: true } : { ok: false, reason: "forbidden" };
@@ -133,16 +125,10 @@ export async function verifyPassword(password: string, hash: string) {
   return bcrypt.compare(password, hash);
 }
 
-// Full list of sections a staff session can reach — used by the
-// dashboard to only show cards for sections the person actually has
-// access to, rather than every section that exists. Unlike
-// requireStaffSection (which checks one specific section and is meant
-// for guarding a page), this is a display concern: returns [] for no
-// session, no role, or a disabled account, same as requireStaffSection
-// would treat those as "no access" rather than throwing.
+// Union of every section granted by ANY role this staff member holds.
 export async function getStaffAllowedSections(): Promise<SectionKey[]> {
   const session = await getStaffSession();
-  if (!session || !session.roleId) return [];
+  if (!session) return [];
 
   const { data: staff } = await supabase
     .from("staff")
@@ -152,10 +138,14 @@ export async function getStaffAllowedSections(): Promise<SectionKey[]> {
 
   if (!staff || staff.status !== "active") return [];
 
+  const roleIds = await getAssignedRoleIds(session.staffId);
+  if (!roleIds.length) return [];
+
   const { data: perms } = await supabase
     .from("staff_role_permissions")
     .select("section")
-    .eq("role_id", session.roleId);
+    .in("role_id", roleIds);
 
-  return (perms ?? []).map(p => p.section as SectionKey);
+  // Dedup — the same section can appear via more than one assigned role.
+  return Array.from(new Set((perms ?? []).map((p) => p.section as SectionKey)));
 }

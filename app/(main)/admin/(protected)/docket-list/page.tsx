@@ -1,7 +1,7 @@
-// app/(main)/admin/cargo/docket-list/page.tsx
+// app/(main)/admin/docket-list/page.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -36,7 +36,7 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 
 // ---------------------------------------------------------------------------
-// Types (mirrors the nested shape returned by GET /api/admin/cargo/docket)
+// Types (mirrors the nested shape returned by GET /api/admin/docket)
 // ---------------------------------------------------------------------------
 
 interface DocketItem {
@@ -274,7 +274,7 @@ function ItemQuickViewModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 px-4"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="w-full max-w-sm rounded-xl border border-neutral-200 bg-white shadow-2xl">
@@ -361,12 +361,107 @@ function ItemQuickViewModal({
 }
 
 // ---------------------------------------------------------------------------
-// Create-invoice form — prefills from the item/docket, but sender/receiver
-// and the actual billed amount are entered fresh since they can differ from
-// the internal costing figures.
+// Create-invoice form — mirrors the full booking-page feature set (frequent
+// customer picker, same-as-customer toggle, status, pickup/delivery flags,
+// notes, all 7 charge fields, payment status) so invoicing an item feels
+// identical to creating a normal booking. Sender/receiver and the actual
+// billed amount are entered fresh since they can differ from internal
+// costing; delivery_mode/status/etc default sensibly but stay editable.
 // ---------------------------------------------------------------------------
 
+interface CargoCustomer {
+  id: string;
+  name: string;
+  phone: string;
+  address: string;
+  city_state: string;
+  pincode: string;
+}
+
+function InvoiceCustomerCombobox({
+  customers,
+  value,
+  onChange,
+}: {
+  customers: CargoCustomer[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = customers.find((c) => c.id === value);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return customers.filter((c) => c.name.toLowerCase().includes(q) || c.phone.includes(q));
+  }, [customers, search]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative">
+      <div
+        className="flex h-9 w-full cursor-pointer items-center justify-between rounded-md border border-neutral-300 bg-white px-3 text-sm text-neutral-900"
+        onClick={() => setOpen((o) => !o)}
+      >
+        {selected ? (
+          <span className="flex-1 truncate">{selected.name} · {selected.phone}</span>
+        ) : (
+          <span className="text-neutral-400">Select a frequent customer (optional)</span>
+        )}
+        {selected ? (
+          <button type="button" onClick={(e) => { e.stopPropagation(); onChange(""); setSearch(""); setOpen(false); }}
+            className="ml-2 text-neutral-400 hover:text-neutral-700">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        ) : (
+          <Search className="ml-2 h-3.5 w-3.5 text-neutral-400" />
+        )}
+      </div>
+      {open && (
+        <div className="absolute z-10 mt-1 w-full rounded-md border border-neutral-200 bg-white shadow-lg">
+          <div className="border-b border-neutral-100 p-2">
+            <Input autoFocus value={search} onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search name or phone…"
+              className="h-7 border-neutral-200 bg-white text-sm text-neutral-900 placeholder:text-neutral-400"
+              onClick={(e) => e.stopPropagation()} />
+          </div>
+          <ul className="max-h-40 overflow-y-auto py-1">
+            <li className="cursor-pointer px-3 py-2 text-sm text-neutral-400 hover:bg-neutral-50"
+              onClick={() => { onChange(""); setSearch(""); setOpen(false); }}>
+              — No frequent customer —
+            </li>
+            {filtered.length === 0 ? (
+              <li className="px-3 py-2 text-sm text-neutral-400">No results</li>
+            ) : (
+              filtered.map((c) => (
+                <li key={c.id}
+                  className={`cursor-pointer px-3 py-2 text-sm hover:bg-blue-50 ${c.id === value ? "bg-blue-50 text-blue-700" : "text-neutral-700"}`}
+                  onClick={() => { onChange(c.id); setSearch(""); setOpen(false); }}>
+                  <span className="font-medium">{c.name}</span>
+                  <span className="ml-2 text-neutral-400">{c.phone}</span>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const DELIVERY_MODES = ["Indian Post", "Normal Cargo", "Express Cargo", "Surface(By Road)"];
+const INVOICE_STATUS_OPTIONS: DocketStatus[] = ["Pending", "Dispatched", "Out for Delivery", "Delivered"];
+
 interface InvoiceFormState {
+  customer_id: string;
   sender_name: string;
   sender_phone: string;
   sender_address: string;
@@ -378,6 +473,11 @@ interface InvoiceFormState {
   receiver_city_state: string;
   receiver_pincode: string;
   delivery_mode: string;
+  status: DocketStatus;
+  pickup_required: boolean;
+  delivery_required: boolean;
+  third_party_tracking: string;
+  notes: string;
   estimate_charge: string;
   docket_charge: string;
   packaging_charge: string;
@@ -385,6 +485,19 @@ interface InvoiceFormState {
   pickup_charge: string;
   extra_mile_delivery: string;
   final_charge: string;
+  payment_status: PaymentStatus;
+  amount_paid: string;
+}
+
+function sumInvoiceCharges(f: InvoiceFormState) {
+  return [
+    f.estimate_charge,
+    f.handling_charge,
+    f.docket_charge,
+    f.pickup_charge,
+    f.packaging_charge,
+    f.extra_mile_delivery,
+  ].reduce((s, v) => s + (parseFloat(v) || 0), 0);
 }
 
 function CreateItemInvoiceModal({
@@ -400,7 +513,12 @@ function CreateItemInvoiceModal({
   onClose: () => void;
   onCreated: (updatedItem: DocketItem) => void;
 }) {
+  const [customers, setCustomers] = useState<CargoCustomer[]>([]);
+  const [senderSameAsCustomer, setSenderSameAsCustomer] = useState(false);
+  const [receiverSameAsCustomer, setReceiverSameAsCustomer] = useState(false);
+
   const [form, setForm] = useState<InvoiceFormState>({
+    customer_id: "",
     sender_name: "",
     sender_phone: "",
     sender_address: "",
@@ -412,32 +530,91 @@ function CreateItemInvoiceModal({
     receiver_city_state: "",
     receiver_pincode: "",
     delivery_mode: "Normal Cargo",
-    // Prefilled from the item/docket — still editable, since the invoice
-    // amount is allowed to differ from these internal costing figures.
-    estimate_charge: item.delivery_charge ? String(item.delivery_charge) : "",
+    status: "Pending",
+    pickup_required: false,
+    delivery_required: false,
+    third_party_tracking: docket.docket_number,
+    notes: `Invoiced from docket ${docket.docket_number}, ${bag.bag_number}, item "${item.name}".`,
+    // Prefilled from the item/docket — still editable. Note delivery_charge
+    // on the item is an extra/additional-mile fee, so it maps to "Extra
+    // mile delivery" here, not the base freight charge.
+    estimate_charge: "",
     docket_charge: docket.docket_charge ? String(docket.docket_charge) : "",
     packaging_charge: item.packaging_charge ? String(item.packaging_charge) : "",
     handling_charge: item.other_charges ? String(item.other_charges) : "",
     pickup_charge: item.pickup_charge ? String(item.pickup_charge) : "",
-    extra_mile_delivery: "",
+    extra_mile_delivery: item.delivery_charge ? String(item.delivery_charge) : "",
     final_charge: "",
+    payment_status: "unpaid",
+    amount_paid: "",
   });
   const [errors, setErrors] = useState<Partial<Record<keyof InvoiceFormState, string>>>({});
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/admin/cargo/customers")
+      .then((res) => res.json())
+      .then((json) => setCustomers((json.data as CargoCustomer[]) ?? []))
+      .catch((err) => console.error("Customers fetch error:", err));
+  }, []);
+
+  const selectedCustomer = useMemo(
+    () => customers.find((c) => c.id === form.customer_id) ?? null,
+    [customers, form.customer_id]
+  );
 
   const upd = <K extends keyof InvoiceFormState>(key: K, value: InvoiceFormState[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
     if (errors[key]) setErrors((prev) => ({ ...prev, [key]: undefined }));
   };
 
-  const computedTotal = [
-    form.estimate_charge,
-    form.docket_charge,
-    form.packaging_charge,
-    form.handling_charge,
-    form.pickup_charge,
-    form.extra_mile_delivery,
-  ].reduce((s, v) => s + (parseFloat(v) || 0), 0);
+  const handleCustomerSelect = (customerId: string) => {
+    setSenderSameAsCustomer(false);
+    setReceiverSameAsCustomer(false);
+    if (!customerId) {
+      upd("customer_id", "");
+      return;
+    }
+    const c = customers.find((x) => x.id === customerId);
+    if (!c) return;
+    setForm((prev) => ({
+      ...prev,
+      customer_id: customerId,
+      sender_name: c.name,
+      sender_phone: c.phone,
+      sender_address: c.address,
+      sender_city_state: c.city_state ?? "",
+      sender_pincode: c.pincode ?? "",
+    }));
+    setSenderSameAsCustomer(true);
+  };
+
+  const toggleSameAs = (which: "sender" | "receiver", checked: boolean) => {
+    if (which === "sender") setSenderSameAsCustomer(checked);
+    else setReceiverSameAsCustomer(checked);
+
+    if (checked && selectedCustomer) {
+      setForm((prev) => ({
+        ...prev,
+        [`${which}_name`]: selectedCustomer.name,
+        [`${which}_phone`]: selectedCustomer.phone,
+        [`${which}_address`]: selectedCustomer.address,
+        [`${which}_city_state`]: selectedCustomer.city_state ?? "",
+        [`${which}_pincode`]: selectedCustomer.pincode ?? "",
+      }));
+    } else {
+      setForm((prev) => ({
+        ...prev,
+        [`${which}_name`]: "",
+        [`${which}_phone`]: "",
+        [`${which}_address`]: "",
+        [`${which}_city_state`]: "",
+        [`${which}_pincode`]: "",
+      }));
+    }
+  };
+
+  const total = sumInvoiceCharges(form);
 
   const validate = () => {
     const next: Partial<Record<keyof InvoiceFormState, string>> = {};
@@ -449,6 +626,8 @@ function CreateItemInvoiceModal({
     if (!form.receiver_address.trim()) next.receiver_address = "Required";
     if (!form.estimate_charge || parseFloat(form.estimate_charge) <= 0)
       next.estimate_charge = "Enter a freight charge";
+    if (form.payment_status === "partial" && (!form.amount_paid || parseFloat(form.amount_paid) <= 0))
+      next.amount_paid = "Enter amount paid";
     setErrors(next);
     return Object.keys(next).length === 0;
   };
@@ -460,7 +639,13 @@ function CreateItemInvoiceModal({
     }
     setSaving(true);
     try {
+      const amountPaid =
+        form.payment_status === "paid" ? total
+        : form.payment_status === "partial" ? parseFloat(form.amount_paid) || 0
+        : 0;
+
       const payload = {
+        customer_id: form.customer_id || null,
         sender_name: form.sender_name,
         sender_phone: form.sender_phone,
         sender_address: form.sender_address,
@@ -472,6 +657,11 @@ function CreateItemInvoiceModal({
         receiver_city_state: form.receiver_city_state,
         receiver_pincode: form.receiver_pincode,
         delivery_mode: form.delivery_mode,
+        status: form.status,
+        pickup_required: form.pickup_required,
+        delivery_required: form.delivery_required,
+        third_party_tracking: form.third_party_tracking,
+        notes: form.notes,
         estimate_charge: parseFloat(form.estimate_charge) || 0,
         docket_charge: form.docket_charge ? parseFloat(form.docket_charge) : undefined,
         packaging_charge: form.packaging_charge ? parseFloat(form.packaging_charge) : undefined,
@@ -479,9 +669,11 @@ function CreateItemInvoiceModal({
         pickup_charge: form.pickup_charge ? parseFloat(form.pickup_charge) : undefined,
         extra_mile_delivery: form.extra_mile_delivery ? parseFloat(form.extra_mile_delivery) : undefined,
         final_charge: form.final_charge ? parseFloat(form.final_charge) : undefined,
+        payment_status: form.payment_status,
+        amount_paid: amountPaid,
       };
 
-      const res = await fetch(`/api/admin/cargo/docket/item/${item.id}/invoice`, {
+      const res = await fetch(`/api/admin/docket/item/${item.id}/invoice`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -504,9 +696,61 @@ function CreateItemInvoiceModal({
   };
 
   const inputCls = "bg-white text-neutral-900 placeholder:text-neutral-400 border-neutral-300 text-sm";
+  const isSenderLocked = senderSameAsCustomer && !!selectedCustomer;
+  const isReceiverLocked = receiverSameAsCustomer && !!selectedCustomer;
+
+  const PartyBlock = ({ which, title }: { which: "sender" | "receiver"; title: string }) => {
+    const nameKey = `${which}_name` as const;
+    const phoneKey = `${which}_phone` as const;
+    const addressKey = `${which}_address` as const;
+    const cityKey = `${which}_city_state` as const;
+    const pinKey = `${which}_pincode` as const;
+    const locked = which === "sender" ? isSenderLocked : isReceiverLocked;
+    const sameChecked = which === "sender" ? senderSameAsCustomer : receiverSameAsCustomer;
+
+    return (
+      <div className={`rounded-lg border border-neutral-200 border-t-2 p-4 ${which === "sender" ? "border-t-blue-500" : "border-t-emerald-500"}`}>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-medium text-neutral-800">{title}</h3>
+          {selectedCustomer && (
+            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100">
+              <input type="checkbox" className="h-3.5 w-3.5 rounded border-blue-300 text-blue-600"
+                checked={sameChecked} onChange={(e) => toggleSameAs(which, e.target.checked)} />
+              Same as <span className="max-w-[70px] truncate font-semibold">{selectedCustomer.name}</span>
+            </label>
+          )}
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field label="Full name" required>
+            <Input className={inputCls} value={form[nameKey]} readOnly={locked}
+              onChange={(e) => upd(nameKey, e.target.value)} />
+            {errors[nameKey] && <p className="text-xs text-red-600">{errors[nameKey]}</p>}
+          </Field>
+          <Field label="Phone" required>
+            <Input className={inputCls} value={form[phoneKey]} inputMode="numeric" readOnly={locked}
+              onChange={(e) => upd(phoneKey, e.target.value.replace(/\D/g, "").slice(0, 10))} />
+            {errors[phoneKey] && <p className="text-xs text-red-600">{errors[phoneKey]}</p>}
+          </Field>
+          <Field label="Address" required className="sm:col-span-2">
+            <Input className={inputCls} value={form[addressKey]} readOnly={locked}
+              onChange={(e) => upd(addressKey, e.target.value)} />
+            {errors[addressKey] && <p className="text-xs text-red-600">{errors[addressKey]}</p>}
+          </Field>
+          <Field label="City / State">
+            <Input className={inputCls} value={form[cityKey]} readOnly={locked}
+              onChange={(e) => upd(cityKey, e.target.value)} />
+          </Field>
+          <Field label="Pincode">
+            <Input className={inputCls} value={form[pinKey]} inputMode="numeric" readOnly={locked}
+              onChange={(e) => upd(pinKey, e.target.value.replace(/\D/g, "").slice(0, 6))} />
+          </Field>
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 px-4 py-8">
+    <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/50 px-4 py-8">
       <div className="w-full max-w-2xl rounded-xl border border-neutral-200 bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-4">
           <div>
@@ -524,101 +768,140 @@ function CreateItemInvoiceModal({
             amount can differ from what you're actually paying to pack/ship it.
           </p>
 
-          {/* Sender */}
-          <div className="rounded-lg border border-neutral-200 border-t-2 border-t-blue-500 p-4">
-            <h3 className="mb-3 text-sm font-medium text-neutral-800">Sender</h3>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Full name" required>
-                <Input className={inputCls} value={form.sender_name} onChange={(e) => upd("sender_name", e.target.value)} />
-                {errors.sender_name && <p className="text-xs text-red-600">{errors.sender_name}</p>}
-              </Field>
-              <Field label="Phone" required>
-                <Input className={inputCls} value={form.sender_phone} inputMode="numeric"
-                  onChange={(e) => upd("sender_phone", e.target.value.replace(/\D/g, "").slice(0, 10))} />
-                {errors.sender_phone && <p className="text-xs text-red-600">{errors.sender_phone}</p>}
-              </Field>
-              <Field label="Address" required className="sm:col-span-2">
-                <Input className={inputCls} value={form.sender_address} onChange={(e) => upd("sender_address", e.target.value)} />
-                {errors.sender_address && <p className="text-xs text-red-600">{errors.sender_address}</p>}
-              </Field>
-              <Field label="City / State">
-                <Input className={inputCls} value={form.sender_city_state} onChange={(e) => upd("sender_city_state", e.target.value)} />
-              </Field>
-              <Field label="Pincode">
-                <Input className={inputCls} value={form.sender_pincode} inputMode="numeric"
-                  onChange={(e) => upd("sender_pincode", e.target.value.replace(/\D/g, "").slice(0, 6))} />
-              </Field>
+          {/* Frequent customer */}
+          <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-4">
+            <div className="mb-2 flex items-center gap-2 text-sm font-medium text-neutral-700">
+              <Receipt className="h-4 w-4 text-blue-600" />
+              Frequent customer
             </div>
+            <InvoiceCustomerCombobox customers={customers} value={form.customer_id} onChange={handleCustomerSelect} />
+            {form.customer_id && (
+              <p className="mt-2 text-xs text-blue-600">
+                ✓ Customer selected. Use the checkboxes below to fill their details into sender/receiver.
+              </p>
+            )}
           </div>
 
-          {/* Receiver */}
-          <div className="rounded-lg border border-neutral-200 border-t-2 border-t-emerald-500 p-4">
-            <h3 className="mb-3 text-sm font-medium text-neutral-800">Receiver</h3>
+          {/* Sender + Receiver */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <PartyBlock which="sender" title="Sender" />
+            <PartyBlock which="receiver" title="Receiver" />
+          </div>
+
+          {/* Package & delivery */}
+          <div className="rounded-lg border border-neutral-200 p-4">
+            <h3 className="mb-3 text-sm font-medium text-neutral-800">Package & delivery</h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field label="Full name" required>
-                <Input className={inputCls} value={form.receiver_name} onChange={(e) => upd("receiver_name", e.target.value)} />
-                {errors.receiver_name && <p className="text-xs text-red-600">{errors.receiver_name}</p>}
+              <Field label="Product name">
+                <Input className={`${inputCls} opacity-70`} value={item.name} readOnly />
               </Field>
-              <Field label="Phone" required>
-                <Input className={inputCls} value={form.receiver_phone} inputMode="numeric"
-                  onChange={(e) => upd("receiver_phone", e.target.value.replace(/\D/g, "").slice(0, 10))} />
-                {errors.receiver_phone && <p className="text-xs text-red-600">{errors.receiver_phone}</p>}
+              <Field label="Weight (kg)">
+                <Input className={`${inputCls} opacity-70`} value={String(item.weight)} readOnly />
               </Field>
-              <Field label="Address" required className="sm:col-span-2">
-                <Input className={inputCls} value={form.receiver_address} onChange={(e) => upd("receiver_address", e.target.value)} />
-                {errors.receiver_address && <p className="text-xs text-red-600">{errors.receiver_address}</p>}
+              <Field label="Delivery mode" required>
+                <Select value={form.delivery_mode} onValueChange={(v) => upd("delivery_mode", v)}>
+                  <SelectTrigger className="bg-white text-neutral-900 border-neutral-300 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-white text-neutral-900">
+                    {DELIVERY_MODES.map((m) => (
+                      <SelectItem key={m} value={m}>{m}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </Field>
-              <Field label="City / State">
-                <Input className={inputCls} value={form.receiver_city_state} onChange={(e) => upd("receiver_city_state", e.target.value)} />
+              <Field label="Status">
+                <Select value={form.status} onValueChange={(v) => upd("status", v as DocketStatus)}>
+                  <SelectTrigger className="bg-white text-neutral-900 border-neutral-300 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-white text-neutral-900">
+                    {INVOICE_STATUS_OPTIONS.map((s) => (
+                      <SelectItem key={s} value={s}>{s}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </Field>
-              <Field label="Pincode">
-                <Input className={inputCls} value={form.receiver_pincode} inputMode="numeric"
-                  onChange={(e) => upd("receiver_pincode", e.target.value.replace(/\D/g, "").slice(0, 6))} />
+              <div className="flex items-center gap-6 sm:col-span-2">
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-neutral-700">
+                  <input type="checkbox" className="h-4 w-4 rounded border-neutral-300 text-blue-600"
+                    checked={form.pickup_required} onChange={(e) => upd("pickup_required", e.target.checked)} />
+                  Pickup required
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-neutral-700">
+                  <input type="checkbox" className="h-4 w-4 rounded border-neutral-300 text-blue-600"
+                    checked={form.delivery_required} onChange={(e) => upd("delivery_required", e.target.checked)} />
+                  Delivery required
+                </label>
+              </div>
+              <Field label="Third-party tracking">
+                <Input className={inputCls} value={form.third_party_tracking}
+                  onChange={(e) => upd("third_party_tracking", e.target.value)} />
+              </Field>
+              <Field label="Notes" className="sm:col-span-2">
+                <Input className={inputCls} value={form.notes} onChange={(e) => upd("notes", e.target.value)} />
               </Field>
             </div>
           </div>
 
           {/* Charges */}
           <div className="rounded-lg border border-neutral-200 p-4">
-            <h3 className="mb-3 text-sm font-medium text-neutral-800">Invoice charges</h3>
+            <h3 className="mb-3 text-sm font-medium text-neutral-800">Charges</h3>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <Field label="Freight charge" required>
-                <Input className={inputCls} value={form.estimate_charge} inputMode="decimal"
-                  onChange={(e) => upd("estimate_charge", e.target.value.replace(/[^0-9.]/g, ""))} />
-                {errors.estimate_charge && <p className="text-xs text-red-600">{errors.estimate_charge}</p>}
-              </Field>
-              <Field label="Docket charge">
-                <Input className={inputCls} value={form.docket_charge} inputMode="decimal"
-                  onChange={(e) => upd("docket_charge", e.target.value.replace(/[^0-9.]/g, ""))} />
-              </Field>
-              <Field label="Packaging charge">
-                <Input className={inputCls} value={form.packaging_charge} inputMode="decimal"
-                  onChange={(e) => upd("packaging_charge", e.target.value.replace(/[^0-9.]/g, ""))} />
-              </Field>
-              <Field label="Handling / other charge">
-                <Input className={inputCls} value={form.handling_charge} inputMode="decimal"
-                  onChange={(e) => upd("handling_charge", e.target.value.replace(/[^0-9.]/g, ""))} />
-              </Field>
-              <Field label="Pickup charge">
-                <Input className={inputCls} value={form.pickup_charge} inputMode="decimal"
-                  onChange={(e) => upd("pickup_charge", e.target.value.replace(/[^0-9.]/g, ""))} />
-              </Field>
-              <Field label="Extra mile delivery">
-                <Input className={inputCls} value={form.extra_mile_delivery} inputMode="decimal"
-                  onChange={(e) => upd("extra_mile_delivery", e.target.value.replace(/[^0-9.]/g, ""))} />
-              </Field>
-              <Field label="Final invoice amount (optional override)" className="col-span-2 sm:col-span-3">
-                <Input className={inputCls} value={form.final_charge} inputMode="decimal"
-                  onChange={(e) => upd("final_charge", e.target.value.replace(/[^0-9.]/g, ""))}
-                  placeholder={`Defaults to sum of charges above: ₹${computedTotal.toFixed(2)}`} />
-              </Field>
+              {([
+                ["Freight charge", "estimate_charge", true],
+                ["Handling charge", "handling_charge", false],
+                ["Docket charge", "docket_charge", false],
+                ["Pickup charge", "pickup_charge", false],
+                ["Packaging charge", "packaging_charge", false],
+                ["Extra mile delivery", "extra_mile_delivery", false],
+                ["Final charge (optional)", "final_charge", false],
+              ] as [string, keyof InvoiceFormState, boolean][]).map(([label, key, req]) => (
+                <Field key={key} label={label} required={req}>
+                  <Input className={inputCls} value={form[key] as string} inputMode="decimal"
+                    onChange={(e) => upd(key, e.target.value.replace(/[^0-9.]/g, "") as never)}
+                    placeholder="0" />
+                  {errors[key] && <p className="text-xs text-red-600">{errors[key]}</p>}
+                </Field>
+              ))}
             </div>
             <div className="mt-3 flex items-center justify-between rounded-md bg-blue-50 px-4 py-2.5">
-              <span className="text-xs font-medium uppercase tracking-wide text-blue-700">Invoice total</span>
+              <span className="text-xs font-medium uppercase tracking-wide text-blue-700">
+                {form.final_charge ? "Invoice total (override)" : "Invoice total"}
+              </span>
               <span className="font-mono text-sm font-semibold text-blue-800">
-                ₹{(form.final_charge ? parseFloat(form.final_charge) || 0 : computedTotal).toFixed(2)}
+                ₹{(form.final_charge ? parseFloat(form.final_charge) || 0 : total).toFixed(2)}
               </span>
             </div>
+          </div>
+
+          {/* Payment */}
+          <div className="rounded-lg border border-neutral-200 p-4">
+            <h3 className="mb-3 text-sm font-medium text-neutral-800">Payment</h3>
+            <div className="flex flex-wrap gap-2">
+              {(["paid", "unpaid", "partial"] as const).map((opt) => (
+                <button key={opt} type="button" onClick={() => upd("payment_status", opt)}
+                  className={`rounded-lg border px-4 py-2 text-sm font-medium capitalize transition ${
+                    form.payment_status === opt
+                      ? opt === "paid" ? "border-emerald-500 bg-emerald-50 text-emerald-700"
+                        : opt === "unpaid" ? "border-red-400 bg-red-50 text-red-700"
+                        : "border-amber-400 bg-amber-50 text-amber-700"
+                      : "border-neutral-200 text-neutral-500 hover:bg-neutral-50"
+                  }`}>
+                  {opt === "paid" ? "✓ Paid" : opt === "unpaid" ? "✗ Unpaid" : "~ Partial"}
+                </button>
+              ))}
+            </div>
+            {form.payment_status === "partial" && (
+              <div className="mt-3 max-w-xs">
+                <Field label="Amount paid" required>
+                  <Input className={inputCls} value={form.amount_paid} inputMode="decimal"
+                    onChange={(e) => upd("amount_paid", e.target.value.replace(/[^0-9.]/g, ""))}
+                    placeholder="e.g. 500" />
+                  {errors.amount_paid && <p className="text-xs text-red-600">{errors.amount_paid}</p>}
+                </Field>
+              </div>
+            )}
           </div>
         </div>
 
@@ -701,7 +984,7 @@ function EditDocketModal({
         payments[c.key] = { total, paid, status: cat.status };
       }
 
-      const res = await fetch(`/api/admin/cargo/docket/${docket.id}`, {
+      const res = await fetch(`/api/admin/docket/${docket.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -725,7 +1008,7 @@ function EditDocketModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 px-4 py-8"
+      className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/50 px-4 py-8"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="w-full max-w-lg rounded-xl border border-neutral-200 bg-white shadow-2xl">
@@ -967,7 +1250,7 @@ export default function DocketListPage() {
     (async () => {
       setLoading(true);
       try {
-        const res = await fetch("/api/admin/cargo/docket");
+        const res = await fetch("/api/admin/docket");
         const json = await res.json();
         if (!res.ok) throw new Error(json.message || "Could not load dockets");
         setDockets((json.data as Docket[]) ?? []);
@@ -1034,7 +1317,7 @@ export default function DocketListPage() {
     setDockets((rows) => rows.map((d) => (d.id === id ? { ...d, status } : d)));
     setUpdatingId(id);
     try {
-      const res = await fetch(`/api/admin/cargo/docket/${id}`, {
+      const res = await fetch(`/api/admin/docket/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
@@ -1155,7 +1438,7 @@ export default function DocketListPage() {
               <List className="mr-1.5 h-4 w-4" />
               <span className="hidden sm:inline">Bookings</span>
             </Button>
-            <Button onClick={() => router.push("/admin/cargo/docket")}
+            <Button onClick={() => router.push("/admin/docket")}
               className="bg-blue-600 text-white hover:bg-blue-700">
               <PackagePlus className="mr-1.5 h-4 w-4" />
               <span className="hidden sm:inline">New docket</span>

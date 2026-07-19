@@ -1,13 +1,29 @@
 // app/api/admin/cargo/docket/[id]/route.ts
+//
+// Called from the Edit modal on the Docket List page — gated on
+// "docket_list", matching the page it's invoked from. Swap to "docket"
+// if you'd rather editing be tied to the create-docket permission
+// instead of the list-viewing one.
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { requireAdmin } from "@/lib/auth/requireAdmin";
+import { requireStaffSection } from "@/lib/auth/staffAuth";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
+
+async function requireAccess(req: NextRequest) {
+  const adminAuth = await requireAdmin(req);
+  if (!("error" in adminAuth)) return null;
+
+  const staffResult = await requireStaffSection("docket_list");
+  if (staffResult.ok) return null;
+
+  return adminAuth.error;
+}
 
 interface PaymentEntry {
   total: number;
@@ -34,8 +50,8 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const auth = await requireAdmin(req);
-  if ("error" in auth) return auth.error;
+  const authError = await requireAccess(req);
+  if (authError) return authError;
 
   const { id } = await params;
   if (!id) {

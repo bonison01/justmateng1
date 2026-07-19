@@ -1,14 +1,13 @@
-// app/api/admin/staff-roles/route.ts
+// app/(main)/admin/staff-roles/route.ts
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { verifyAdminSession } from "@/lib/auth/adminAuth"; // adjust to your actual export name
+import { supabaseAdmin as supabase } from "@/lib/supabaseAdmin";
+import { getAdminSession } from "@/lib/auth/session";
 import { isSectionKey } from "@/lib/permissions";
 
 export async function GET() {
-  const admin = await verifyAdminSession();
+  const admin = await getAdminSession();
   if (!admin) return NextResponse.json({ message: "Unauthorized." }, { status: 401 });
 
-  const supabase = createClient();
   const { data: roles, error } = await supabase
     .from("staff_roles")
     .select("id, name, description, staff_role_permissions(section)")
@@ -29,7 +28,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const admin = await verifyAdminSession();
+  const admin = await getAdminSession();
   if (!admin) return NextResponse.json({ message: "Unauthorized." }, { status: 401 });
 
   const { name, description, sections } = await req.json();
@@ -40,8 +39,6 @@ export async function POST(req: Request) {
   const validSections: string[] = Array.isArray(sections)
     ? sections.filter((s: unknown): s is string => typeof s === "string" && isSectionKey(s))
     : [];
-
-  const supabase = createClient();
 
   const { data: role, error } = await supabase
     .from("staff_roles")
@@ -60,8 +57,6 @@ export async function POST(req: Request) {
       .insert(validSections.map(section => ({ role_id: role.id, section })));
 
     if (permError) {
-      // Role was created but permissions failed — clean up so we don't
-      // leave a role with no sections silently attached to staff.
       await supabase.from("staff_roles").delete().eq("id", role.id);
       return NextResponse.json({ message: permError.message }, { status: 400 });
     }

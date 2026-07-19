@@ -1,13 +1,39 @@
 // app/api/admin/cargo/docket/route.ts
+//
+// AUTH: requireAdmin(req) predates the staff/role system and only
+// recognizes admin sessions. Fallback added below so a staff member
+// with the right permission isn't rejected — same pattern as
+// api/admin/cargo/bookings/route.ts.
+//
+// Section mapping (worth double-checking against your intent):
+//   GET  (list dockets)   -> "docket_list" — this is what the Docket
+//                             List page calls to populate its table.
+//   POST (create docket)  -> "docket" — this is what the separate
+//                             "New docket" page/flow calls.
+// If a role should be able to create dockets from within the list page
+// too, POST may need to accept "docket_list" as well — swap the
+// section key below or OR the two checks together.
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { requireAdmin } from "@/lib/auth/requireAdmin";
+import { requireStaffSection } from "@/lib/auth/staffAuth";
+import type { SectionKey } from "@/lib/permissions";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
+
+async function requireAccess(req: NextRequest, section: SectionKey) {
+  const adminAuth = await requireAdmin(req);
+  if (!("error" in adminAuth)) return null;
+
+  const staffResult = await requireStaffSection(section);
+  if (staffResult.ok) return null;
+
+  return adminAuth.error;
+}
 
 // ---------------------------------------------------------------------------
 // Request payload shapes (what the frontend form sends)
@@ -98,8 +124,8 @@ interface ItemRow {
 // ---------------------------------------------------------------------------
 
 export async function GET(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if ("error" in auth) return auth.error;
+  const authError = await requireAccess(req, "docket_list");
+  if (authError) return authError;
 
   const { data: dockets, error: docketsErr } = await supabaseAdmin
     .from("cargo_dockets")
@@ -169,8 +195,8 @@ export async function GET(req: NextRequest) {
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest) {
-  const auth = await requireAdmin(req);
-  if ("error" in auth) return auth.error;
+  const authError = await requireAccess(req, "docket");
+  if (authError) return authError;
 
   const body = (await req.json()) as DocketPayload;
 
