@@ -2,6 +2,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,7 +10,6 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
-  
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -20,17 +20,27 @@ import {
   X,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   FileText,
   Plus,
   Users,
   ArrowUpDown,
-  PackagePlus,
   Check,
   Pencil,
-  List,
+  Package,
+  Truck,
+  CheckCircle2,
+  Wallet,
+  IndianRupee,
+  Copy,
+  Download,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
+// NOTE: adjust this import to wherever InvoiceTemplate actually lives in your project
+// (e.g. the component your `/admin/cargo/invoice/[id]` route already renders).
+import InvoiceTemplate from "./InvoiceTemplate";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,11 +96,52 @@ const PAYMENT_STYLES: Record<PaymentStatus, string> = {
 
 const STATUS_OPTIONS: Booking["status"][] = ["Pending", "Out for Delivery", "Delivered"];
 
+const PAGE_SIZE_OPTIONS = [20, 30, 40, 50];
+
 function modeLabel(mode: string) {
   if (mode === "Indian Post" || mode === "standard") return "Indian Post";
   if (mode === "Express Cargo" || mode === "express") return "Express";
   if (mode === "Normal Cargo" || mode === "normal") return "Normal";
   return mode;
+}
+
+// Final charge (total): use the explicit final_charge if set, otherwise sum
+// every individual charge line — mirrors the invoice's total calculation.
+function computeFinalCharge(b: Booking): number {
+  if (b.final_charge != null) return b.final_charge;
+  const parts: number[] = [
+    b.estimate_charge ?? 0,
+    b.handling_charge ?? 0,
+    b.docket_charge ?? 0,
+    b.pickup_charge ?? 0,
+    b.packaging_charge ?? 0,
+    b.extra_mile_delivery ?? 0,
+  ];
+  return parts.reduce((sum: number, v: number) => sum + v, 0);
+}
+
+async function copyToClipboard(text: string, label = "Value") {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast.success(`${label} copied`);
+  } catch {
+    toast.error("Could not copy");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Portal — renders modals straight into document.body so they always sit
+// above the site's global nav, regardless of any `transform`/`filter`
+// ancestor in the layout that would otherwise trap `position: fixed`.
+// ---------------------------------------------------------------------------
+
+function Portal({ children }: { children: React.ReactNode }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+  if (!mounted) return null;
+  return createPortal(children, document.body);
 }
 
 // ---------------------------------------------------------------------------
@@ -304,11 +355,12 @@ function EditModal({
   const inputCls = "bg-white text-neutral-900 placeholder:text-neutral-400 border-neutral-300 text-sm";
 
   return (
-    <div
-      ref={overlayRef}
-      onClick={handleOverlayClick}
-      className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/50 px-4 py-8"
-    >
+    <Portal>
+      <div
+        ref={overlayRef}
+        onClick={handleOverlayClick}
+        className="fixed inset-0 z-[999999] flex items-start justify-center overflow-y-auto bg-black/50 px-4 py-8"
+      >
       <div className="w-full max-w-3xl rounded-xl border border-neutral-200 bg-white shadow-2xl">
         {/* Modal header */}
         <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-4">
@@ -539,6 +591,7 @@ function EditModal({
         </div>
       </div>
     </div>
+    </Portal>
   );
 }
 
@@ -560,7 +613,7 @@ function PaymentEditor({
     booking.amount_paid > 0 ? String(booking.amount_paid) : ""
   );
   const ref = useRef<HTMLDivElement>(null);
-  const charge = booking.final_charge ?? booking.estimate_charge;
+  const charge = computeFinalCharge(booking);
 
   const openEditor = () => {
     setStatus(booking.payment_status);
@@ -617,7 +670,7 @@ function PaymentEditor({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-7 z-[100] w-56 rounded-xl border border-neutral-200 bg-white p-3 shadow-xl">
+        <div className="absolute right-0 top-7 z-50 w-56 rounded-xl border border-neutral-200 bg-white p-3 shadow-xl">
           <p className="mb-2 text-xs font-medium text-neutral-500">Update payment</p>
           <div className="mb-2 flex gap-1.5">
             {(["paid", "unpaid", "partial"] as const).map((opt) => (
@@ -669,6 +722,155 @@ function PaymentEditor({
 }
 
 // ---------------------------------------------------------------------------
+// Invoice Modal
+// ---------------------------------------------------------------------------
+
+function InvoiceModal({
+  booking,
+  onClose,
+}: {
+  booking: Booking;
+  onClose: () => void;
+}) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  const handleOverlayClick = (e: React.MouseEvent) => {
+    if (e.target === overlayRef.current) onClose();
+  };
+
+  // Prints just the invoice content. From the browser print dialog the user
+  // can pick "Save as PDF" as the destination to download it.
+  const handleDownload = () => {
+    window.print();
+  };
+
+  return (
+    <Portal>
+      <div
+        ref={overlayRef}
+        onClick={handleOverlayClick}
+        className="fixed inset-0 z-[999999] flex items-start justify-center overflow-y-auto bg-black/50 px-4 py-8 print:static print:bg-white print:p-0"
+      >
+        {/* Print styles: hide everything except the invoice content when printing */}
+        <style jsx global>{`
+          @media print {
+            body * {
+              visibility: hidden;
+            }
+            #invoice-print-area,
+            #invoice-print-area * {
+              visibility: visible;
+            }
+            #invoice-print-area {
+              position: absolute;
+              inset: 0;
+              width: 100%;
+              max-height: none !important;
+              overflow: visible !important;
+            }
+          }
+        `}</style>
+
+        <div className="w-full max-w-3xl rounded-xl border border-neutral-200 bg-white shadow-2xl print:w-auto print:max-w-none print:border-0 print:shadow-none">
+          <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-4 print:hidden">
+            <div>
+              <h2 className="text-sm font-semibold text-neutral-900">Invoice</h2>
+              <p className="font-mono text-xs text-emerald-700">{booking.tracking_id}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDownload}
+                className="border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50"
+              >
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                Download
+              </Button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-md p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
+          <div id="invoice-print-area" className="max-h-[75vh] overflow-y-auto">
+            <InvoiceTemplate booking={booking} />
+          </div>
+        </div>
+      </div>
+    </Portal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+
+function StatCard({
+  icon,
+  label,
+  value,
+  accent,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  accent: string;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-white p-3.5 shadow-sm">
+      <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${accent}`}>
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <p className="truncate text-[11px] font-medium uppercase tracking-wide text-neutral-400">{label}</p>
+        <p className="truncate text-base font-semibold text-neutral-900">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({ bookings }: { bookings: Booking[] }) {
+  const stats = useMemo(() => {
+    const total = bookings.length;
+    const pending = bookings.filter((b) => b.status === "Pending").length;
+    const outForDelivery = bookings.filter((b) => b.status === "Out for Delivery").length;
+    const delivered = bookings.filter((b) => b.status === "Delivered").length;
+    const revenue = bookings.reduce((s, b) => s + computeFinalCharge(b), 0);
+    const collected = bookings.reduce((s, b) => s + (b.amount_paid ?? 0), 0);
+    const outstanding = bookings
+      .filter((b) => b.payment_status !== "paid")
+      .reduce((s, b) => s + Math.max(0, computeFinalCharge(b) - (b.amount_paid ?? 0)), 0);
+    return { total, pending, outForDelivery, delivered, revenue, collected, outstanding };
+  }, [bookings]);
+
+  const fmt = (n: number) => `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+
+  return (
+    <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+      <StatCard icon={<Package className="h-4.5 w-4.5 text-neutral-600" />} label="Total bookings"
+        value={String(stats.total)} accent="bg-neutral-100" />
+      <StatCard icon={<Loader2 className="h-4.5 w-4.5 text-amber-600" />} label="Pending"
+        value={String(stats.pending)} accent="bg-amber-50" />
+      <StatCard icon={<Truck className="h-4.5 w-4.5 text-blue-600" />} label="Out for delivery"
+        value={String(stats.outForDelivery)} accent="bg-blue-50" />
+      <StatCard icon={<CheckCircle2 className="h-4.5 w-4.5 text-emerald-600" />} label="Delivered"
+        value={String(stats.delivered)} accent="bg-emerald-50" />
+      <StatCard icon={<IndianRupee className="h-4.5 w-4.5 text-emerald-600" />} label="Total revenue"
+        value={fmt(stats.revenue)} accent="bg-emerald-50" />
+      <StatCard icon={<Wallet className="h-4.5 w-4.5 text-emerald-600" />} label="Collected"
+        value={fmt(stats.collected)} accent="bg-emerald-50" />
+      <StatCard icon={<Wallet className="h-4.5 w-4.5 text-red-600" />} label="Outstanding"
+        value={fmt(stats.outstanding)} accent="bg-red-50" />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Mobile booking card
 // ---------------------------------------------------------------------------
 
@@ -684,16 +886,29 @@ function BookingCard({
   updatingId: string | null;
   onStatusChange: (id: string, status: Booking["status"]) => void;
   onPaymentUpdated: (id: string, updates: Partial<Booking>) => void;
-  onInvoice: (id: string) => void;
+  onInvoice: (b: Booking) => void;
   onEdit: (b: Booking) => void;
 }) {
-  const charge = b.final_charge ?? b.estimate_charge;
+  const charge = computeFinalCharge(b);
 
   return (
     <div className="rounded-xl border border-neutral-200 bg-white p-4 shadow-sm">
       <div className="mb-3 flex items-start justify-between gap-2">
-        <span className="font-mono text-xs font-semibold text-emerald-700">{b.tracking_id}</span>
-        <span className="text-xs text-neutral-400">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate font-mono text-xs font-semibold text-emerald-700">
+            {b.third_party_tracking || "— no 3rd-party tracking —"}
+          </span>
+          {b.third_party_tracking && (
+            <button
+              type="button"
+              onClick={() => copyToClipboard(b.third_party_tracking, "Tracking number")}
+              className="shrink-0 text-neutral-400 hover:text-emerald-600"
+            >
+              <Copy className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+        <span className="shrink-0 text-xs text-neutral-400">
           {new Date(b.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
         </span>
       </div>
@@ -748,7 +963,7 @@ function BookingCard({
         </Button>
         <Button variant="outline" size="sm"
           className="h-7 flex-1 border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50"
-          onClick={() => onInvoice(b.id)}>
+          onClick={() => onInvoice(b)}>
           <FileText className="mr-1.5 h-3.5 w-3.5" />
           Invoice
         </Button>
@@ -769,12 +984,16 @@ export default function AdminBookingsPage() {
   const [status, setStatus] = useState<string>("all");
   const [deliveryMode, setDeliveryMode] = useState<string>("all");
   const [paymentFilter, setPaymentFilter] = useState<string>("all");
+  const [dateRange, setDateRange] = useState<string>("all");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
+  const [invoiceBooking, setInvoiceBooking] = useState<Booking | null>(null);
+  const [pageSize, setPageSize] = useState<number>(20);
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     (async () => {
@@ -821,6 +1040,37 @@ export default function AdminBookingsPage() {
     setBookings((rows) => rows.map((b) => (b.id === updated.id ? updated : b)));
   };
 
+  // Turn the simple date preset into an actual start/end range.
+  const { effectiveStart, effectiveEnd } = useMemo(() => {
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    switch (dateRange) {
+      case "today":
+        return { effectiveStart: startOfToday, effectiveEnd: null as Date | null };
+      case "7d": {
+        const d = new Date(startOfToday);
+        d.setDate(d.getDate() - 6);
+        return { effectiveStart: d, effectiveEnd: null as Date | null };
+      }
+      case "30d": {
+        const d = new Date(startOfToday);
+        d.setDate(d.getDate() - 29);
+        return { effectiveStart: d, effectiveEnd: null as Date | null };
+      }
+      case "month": {
+        const d = new Date(now.getFullYear(), now.getMonth(), 1);
+        return { effectiveStart: d, effectiveEnd: null as Date | null };
+      }
+      case "custom":
+        return {
+          effectiveStart: startDate ? new Date(startDate) : null,
+          effectiveEnd: endDate ? new Date(`${endDate}T23:59:59`) : null,
+        };
+      default:
+        return { effectiveStart: null as Date | null, effectiveEnd: null as Date | null };
+    }
+  }, [dateRange, startDate, endDate]);
+
   const filtered = useMemo(() => {
     let rows = [...bookings];
     if (search.trim()) {
@@ -828,6 +1078,7 @@ export default function AdminBookingsPage() {
       rows = rows.filter(
         (b) =>
           b.tracking_id.toLowerCase().includes(q) ||
+          b.third_party_tracking?.toLowerCase().includes(q) ||
           b.sender_name.toLowerCase().includes(q) ||
           b.receiver_name.toLowerCase().includes(q) ||
           b.receiver_phone?.includes(q) ||
@@ -844,19 +1095,41 @@ export default function AdminBookingsPage() {
         return m === deliveryMode;
       });
     if (paymentFilter !== "all") rows = rows.filter((b) => b.payment_status === paymentFilter);
-    if (startDate) rows = rows.filter((b) => new Date(b.created_at) >= new Date(startDate));
-    if (endDate) rows = rows.filter((b) => new Date(b.created_at) <= new Date(`${endDate}T23:59:59`));
+    if (effectiveStart) rows = rows.filter((b) => new Date(b.created_at) >= effectiveStart);
+    if (effectiveEnd) rows = rows.filter((b) => new Date(b.created_at) <= effectiveEnd);
     rows.sort((a, b) => {
-      const av = sortKey === "created_at" ? new Date(a.created_at).getTime() : Number(a[sortKey]) || 0;
-      const bv = sortKey === "created_at" ? new Date(b.created_at).getTime() : Number(b[sortKey]) || 0;
+      const av =
+        sortKey === "created_at"
+          ? new Date(a.created_at).getTime()
+          : sortKey === "estimate_charge"
+          ? computeFinalCharge(a)
+          : Number(a[sortKey]) || 0;
+      const bv =
+        sortKey === "created_at"
+          ? new Date(b.created_at).getTime()
+          : sortKey === "estimate_charge"
+          ? computeFinalCharge(b)
+          : Number(b[sortKey]) || 0;
       return sortDir === "asc" ? av - bv : bv - av;
     });
     return rows;
-  }, [bookings, search, status, deliveryMode, paymentFilter, startDate, endDate, sortKey, sortDir]);
+  }, [bookings, search, status, deliveryMode, paymentFilter, effectiveStart, effectiveEnd, sortKey, sortDir]);
+
+  // Reset to page 1 whenever the result set or page size changes.
+  useEffect(() => {
+    setPage(1);
+  }, [search, status, deliveryMode, paymentFilter, dateRange, startDate, endDate, sortKey, sortDir, pageSize]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const paginated = useMemo(
+    () => filtered.slice((safePage - 1) * pageSize, safePage * pageSize),
+    [filtered, safePage, pageSize]
+  );
 
   const clearFilters = () => {
     setSearch(""); setStatus("all"); setDeliveryMode("all");
-    setPaymentFilter("all"); setStartDate(""); setEndDate("");
+    setPaymentFilter("all"); setDateRange("all"); setStartDate(""); setEndDate("");
   };
 
   const toggleSort = (key: SortKey) => {
@@ -866,11 +1139,7 @@ export default function AdminBookingsPage() {
 
   const hasActiveFilters =
     search || status !== "all" || deliveryMode !== "all" ||
-    paymentFilter !== "all" || startDate || endDate;
-
-  const totalOutstanding = bookings
-    .filter((b) => b.payment_status !== "paid")
-    .reduce((s, b) => s + Math.max(0, (b.final_charge ?? b.estimate_charge) - (b.amount_paid ?? 0)), 0);
+    paymentFilter !== "all" || dateRange !== "all";
 
   const SortBtn = ({ label, k }: { label: string; k: SortKey }) => (
     <button type="button" onClick={() => toggleSort(k)}
@@ -884,6 +1153,43 @@ export default function AdminBookingsPage() {
     </button>
   );
 
+  const Pagination = () => (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-neutral-100 pt-4">
+      <div className="flex items-center gap-2 text-xs text-neutral-500">
+        <span>
+          Showing {filtered.length === 0 ? 0 : (safePage - 1) * pageSize + 1}
+          {"–"}
+          {Math.min(safePage * pageSize, filtered.length)} of {filtered.length}
+        </span>
+        <span className="text-neutral-300">|</span>
+        <span>Rows per page</span>
+        <Select value={String(pageSize)} onValueChange={(v) => setPageSize(Number(v))}>
+          <SelectTrigger className="h-7 w-[70px] bg-white text-xs text-neutral-900 border-neutral-200">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="bg-white text-neutral-900">
+            {PAGE_SIZE_OPTIONS.map((n) => (
+              <SelectItem key={n} value={String(n)}>{n}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <Button variant="outline" size="sm" className="h-7 w-7 border-neutral-200 bg-white p-0 text-neutral-600 disabled:opacity-40"
+          onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={safePage <= 1}>
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </Button>
+        <span className="min-w-[70px] text-center text-xs text-neutral-500">
+          Page {safePage} of {totalPages}
+        </span>
+        <Button variant="outline" size="sm" className="h-7 w-7 border-neutral-200 bg-white p-0 text-neutral-600 disabled:opacity-40"
+          onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}>
+          <ChevronRight className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-white">
       {/* Edit modal */}
@@ -895,6 +1201,14 @@ export default function AdminBookingsPage() {
         />
       )}
 
+      {/* Invoice modal */}
+      {invoiceBooking && (
+        <InvoiceModal
+          booking={invoiceBooking}
+          onClose={() => setInvoiceBooking(null)}
+        />
+      )}
+
       <div className="mx-auto max-w-7xl px-4 py-6 sm:py-8">
 
         {/* Header */}
@@ -903,11 +1217,6 @@ export default function AdminBookingsPage() {
             <h1 className="text-lg font-semibold text-neutral-900">Bookings</h1>
             <p className="text-sm text-neutral-500">
               {loading ? "Loading…" : `${filtered.length} of ${bookings.length} bookings`}
-              {totalOutstanding > 0 && !loading && (
-                <span className="ml-2 font-medium text-red-600">
-                  · ₹{totalOutstanding.toFixed(2)} outstanding
-                </span>
-              )}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -915,18 +1224,6 @@ export default function AdminBookingsPage() {
               className="border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50">
               <Users className="mr-1.5 h-4 w-4" />
               <span className="hidden sm:inline">Customers</span>
-            </Button>
-            <Button variant="outline" onClick={() => router.push("/admin/cargo/docket")}
-              className="border-blue-200 bg-white text-blue-700 hover:bg-blue-50">
-              <PackagePlus className="mr-1.5 h-4 w-4" />
-              <span className="hidden sm:inline">New Docket</span>
-              <span className="sm:hidden">Docket</span>
-            </Button>
-            <Button variant="outline" onClick={() => router.push("/admin/cargo/docket-list")}
-              className="border-blue-200 bg-white text-blue-700 hover:bg-blue-50">
-              <List className="mr-1.5 h-4 w-4" />
-              <span className="hidden sm:inline">Docket List</span>
-              <span className="sm:hidden">Dockets</span>
             </Button>
             <Button onClick={() => router.push("/admin/cargo/bookingPage")}
               className="bg-emerald-600 text-white hover:bg-emerald-700">
@@ -937,13 +1234,16 @@ export default function AdminBookingsPage() {
           </div>
         </div>
 
+        {/* Dashboard */}
+        {!loading && <Dashboard bookings={bookings} />}
+
         {/* Filters */}
         <div className="mb-5 space-y-2 rounded-xl border border-neutral-200 bg-neutral-50 p-3">
           <div className="flex gap-2">
             <div className="relative flex-1">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400" />
               <Input value={search} onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search tracking ID, name or phone"
+                placeholder="Search tracking ID, 3rd-party tracking, name or phone"
                 className="bg-white pl-8 text-neutral-900 placeholder:text-neutral-400 border-neutral-200" />
             </div>
             {hasActiveFilters && (
@@ -987,10 +1287,27 @@ export default function AdminBookingsPage() {
                 <SelectItem value="partial">Partial</SelectItem>
               </SelectContent>
             </Select>
-            <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
-              className="h-8 w-auto bg-white text-xs text-neutral-900 border-neutral-200" />
-            <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
-              className="h-8 w-auto bg-white text-xs text-neutral-900 border-neutral-200" />
+            <Select value={dateRange} onValueChange={setDateRange}>
+              <SelectTrigger className="h-8 w-auto min-w-[130px] bg-white text-xs text-neutral-900 border-neutral-200">
+                <SelectValue placeholder="Date range" />
+              </SelectTrigger>
+              <SelectContent className="bg-white text-neutral-900">
+                <SelectItem value="all">All time</SelectItem>
+                <SelectItem value="today">Today</SelectItem>
+                <SelectItem value="7d">Last 7 days</SelectItem>
+                <SelectItem value="30d">Last 30 days</SelectItem>
+                <SelectItem value="month">This month</SelectItem>
+                <SelectItem value="custom">Custom range</SelectItem>
+              </SelectContent>
+            </Select>
+            {dateRange === "custom" && (
+              <>
+                <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+                  className="h-8 w-auto bg-white text-xs text-neutral-900 border-neutral-200" />
+                <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+                  className="h-8 w-auto bg-white text-xs text-neutral-900 border-neutral-200" />
+              </>
+            )}
           </div>
         </div>
 
@@ -1003,19 +1320,22 @@ export default function AdminBookingsPage() {
           ) : filtered.length === 0 ? (
             <div className="py-16 text-center text-sm text-neutral-400">No bookings match these filters.</div>
           ) : (
-            <div className="space-y-3">
-              {filtered.map((b) => (
-                <BookingCard
-                  key={b.id}
-                  b={b}
-                  updatingId={updatingId}
-                  onStatusChange={handleStatusChange}
-                  onPaymentUpdated={handlePaymentUpdated}
-                  onInvoice={(id) => router.push(`/admin/cargo/invoice/${id}`)}
-                  onEdit={setEditingBooking}
-                />
-              ))}
-            </div>
+            <>
+              <div className="space-y-3">
+                {paginated.map((b) => (
+                  <BookingCard
+                    key={b.id}
+                    b={b}
+                    updatingId={updatingId}
+                    onStatusChange={handleStatusChange}
+                    onPaymentUpdated={handlePaymentUpdated}
+                    onInvoice={setInvoiceBooking}
+                    onEdit={setEditingBooking}
+                  />
+                ))}
+              </div>
+              <Pagination />
+            </>
           )}
         </div>
 
@@ -1038,14 +1358,14 @@ export default function AdminBookingsPage() {
             </colgroup>
             <thead>
               <tr className="border-b border-emerald-100 bg-emerald-50/60">
-                <th className="px-3 py-2.5 text-left text-xs font-medium text-emerald-800">Tracking</th>
+                <th className="px-3 py-2.5 text-left text-xs font-medium text-emerald-800">3rd-Party Tracking</th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-emerald-800">Sender</th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-emerald-800">Receiver</th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-emerald-800">Product</th>
                 <th className="px-3 py-2.5 text-left text-xs"><SortBtn label="Weight" k="weight_estimate" /></th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-emerald-800">Mode</th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-emerald-800">Status</th>
-                <th className="px-3 py-2.5 text-left text-xs"><SortBtn label="Charge" k="estimate_charge" /></th>
+                <th className="px-3 py-2.5 text-left text-xs"><SortBtn label="Final Charge" k="estimate_charge" /></th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-emerald-800">Payment</th>
                 <th className="px-3 py-2.5 text-left text-xs"><SortBtn label="Date" k="created_at" /></th>
                 <th className="px-3 py-2.5 text-left text-xs font-medium text-emerald-800">Invoice</th>
@@ -1066,15 +1386,26 @@ export default function AdminBookingsPage() {
                   </td>
                 </tr>
               ) : (
-                filtered.map((b) => {
-                  const charge = b.final_charge ?? b.estimate_charge;
+                paginated.map((b) => {
+                  const charge = computeFinalCharge(b);
                   return (
                     <tr key={b.id}
                       className="border-b border-neutral-100 last:border-0 hover:bg-emerald-50/30 transition-colors">
                       <td className="px-3 py-2.5">
-                        <span className="block truncate font-mono text-xs font-medium text-emerald-700">
-                          {b.tracking_id}
-                        </span>
+                        <div className="flex min-w-0 items-center gap-1">
+                          <span className="truncate font-mono text-xs font-medium text-emerald-700">
+                            {b.third_party_tracking || "—"}
+                          </span>
+                          {b.third_party_tracking && (
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(b.third_party_tracking, "Tracking number")}
+                              className="shrink-0 text-neutral-400 hover:text-emerald-600"
+                            >
+                              <Copy className="h-3 w-3" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2.5">
                         <p className="truncate text-xs font-medium text-neutral-800">{b.sender_name}</p>
@@ -1122,7 +1453,7 @@ export default function AdminBookingsPage() {
                       <td className="px-3 py-2.5">
                         <Button variant="outline" size="sm"
                           className="h-6 w-full border-emerald-200 bg-white px-1.5 text-xs text-emerald-700 hover:bg-emerald-50"
-                          onClick={() => router.push(`/admin/cargo/invoice/${b.id}`)}>
+                          onClick={() => setInvoiceBooking(b)}>
                           <FileText className="h-3 w-3" />
                         </Button>
                       </td>
@@ -1139,6 +1470,7 @@ export default function AdminBookingsPage() {
               )}
             </tbody>
           </table>
+          {!loading && filtered.length > 0 && <Pagination />}
         </div>
 
       </div>
